@@ -4,10 +4,6 @@ An in-game graphics dashboard and optional external visual-upgrade companion for
 
 **Author:** Srixun
 
-**Community:** https://Discord.gg/AuraPub
-
-**PvP'ers welcome.**
-
 ## Features
 
 - Performance, Balanced, Quality, and five-second Recommended profiles
