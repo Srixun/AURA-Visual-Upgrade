@@ -1,0 +1,45 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File): $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate Lua 5.1 syntax
+        shell: pwsh
+        run: |
+          npm install --no-save --no-audit --no-fund luaparse@0.3.1
+          node -e "const fs=require('fs'),p=require('luaparse'),cp=require('child_process');const files=cp.execFileSync('git',['ls-files','*.lua'],{encoding:'utf8'}).trim().split(/\r?\n/).filter(Boolean);for(const f of files){p.parse(fs.readFileSync(f,'utf8'),{luaVersion:'5.1'});console.log('VALID '+f)}"
+
+      - name: Validate addon metadata
+        shell: pwsh
+        run: |
+          $toc = Get-Content 'addon/AURA_VisualUpgrade/AURA_VisualUpgrade.toc' -Raw
+          if ($toc -notmatch '(?m)^## Interface:\s*30300$') { throw 'Interface must be 30300.' }
+          if ($toc -notmatch '(?m)^## Author:\s*Srixun$') { throw 'Author must be Srixun.' }
+          if ($toc -notmatch '(?m)^## Version:\s*\d+\.\d+\.\d+$') { throw 'Version must use semantic versioning.' }

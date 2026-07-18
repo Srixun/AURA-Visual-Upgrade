@@ -1,0 +1,5 @@
+dist/
+*.zip
+*.sha256
+.AURA_VisualUpgrade.backup-*/
+.AURA_VisualUpgrade.uninstalled-*/

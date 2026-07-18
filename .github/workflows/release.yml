@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release version and scripts
+        shell: pwsh
+        run: |
+          $toc = Get-Content 'addon/AURA_VisualUpgrade/AURA_VisualUpgrade.toc' -Raw
+          $version = [regex]::Match($toc, '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$').Groups[1].Value
+          if (-not $version) { throw 'Unable to read addon version.' }
+          if ("v$version" -ne '${{ github.ref_name }}') { throw "Tag ${{ github.ref_name }} does not match addon version $version." }
+          Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw "PowerShell syntax error in $($_.FullName): $($errors.Message -join '; ')" }
+          }
+
+      - name: Build release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path 'dist' | Out-Null
+
+          $addonZip = 'dist/AURA-Visual-Upgrade-Addon.zip'
+          Compress-Archive -Path 'addon/AURA_VisualUpgrade' -DestinationPath $addonZip -CompressionLevel Optimal
+          $addonHash = (Get-FileHash -Algorithm SHA256 $addonZip).Hash
+          "$addonHash  AURA-Visual-Upgrade-Addon.zip" | Set-Content 'dist/AURA-Visual-Upgrade-Addon.zip.sha256' -Encoding ascii
+
+          $autoRoot = 'dist/auto/AURA-Visual-Upgrade-Auto-Installer'
+          New-Item -ItemType Directory -Path $autoRoot -Force | Out-Null
+          Copy-Item 'installer/*' $autoRoot -Recurse
+          Copy-Item $addonZip (Join-Path $autoRoot 'AURA_VisualUpgrade.zip')
+          Copy-Item 'dist/AURA-Visual-Upgrade-Addon.zip.sha256' (Join-Path $autoRoot 'AURA_VisualUpgrade.zip.sha256')
+          Compress-Archive -Path $autoRoot -DestinationPath 'dist/AURA-Visual-Upgrade-Auto-Installer.zip' -CompressionLevel Optimal
+          $autoHash = (Get-FileHash -Algorithm SHA256 'dist/AURA-Visual-Upgrade-Auto-Installer.zip').Hash
+          "$autoHash  AURA-Visual-Upgrade-Auto-Installer.zip" | Set-Content 'dist/AURA-Visual-Upgrade-Auto-Installer.zip.sha256' -Encoding ascii
+
+          $companionRoot = 'dist/companion/AURA-Visual-Upgrade-Companion'
+          New-Item -ItemType Directory -Path $companionRoot -Force | Out-Null
+          Copy-Item 'companion/*' $companionRoot -Recurse
+          Copy-Item 'installer/Install-AURAVisualUpgrade.ps1' $companionRoot
+          Copy-Item 'installer/Check for AURA Updates.cmd' $companionRoot
+          Copy-Item $addonZip (Join-Path $companionRoot 'AURA_VisualUpgrade.zip')
+          Copy-Item 'dist/AURA-Visual-Upgrade-Addon.zip.sha256' (Join-Path $companionRoot 'AURA_VisualUpgrade.zip.sha256')
+          Compress-Archive -Path $companionRoot -DestinationPath 'dist/AURA-Visual-Upgrade-Companion.zip' -CompressionLevel Optimal
+          $companionHash = (Get-FileHash -Algorithm SHA256 'dist/AURA-Visual-Upgrade-Companion.zip').Hash
+          "$companionHash  AURA-Visual-Upgrade-Companion.zip" | Set-Content 'dist/AURA-Visual-Upgrade-Companion.zip.sha256' -Encoding ascii
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' `
+            'dist/AURA-Visual-Upgrade-Addon.zip' `
+            'dist/AURA-Visual-Upgrade-Addon.zip.sha256' `
+            'dist/AURA-Visual-Upgrade-Auto-Installer.zip' `
+            'dist/AURA-Visual-Upgrade-Auto-Installer.zip.sha256' `
+            'dist/AURA-Visual-Upgrade-Companion.zip' `
+            'dist/AURA-Visual-Upgrade-Companion.zip.sha256' `
+            --verify-tag --generate-notes --title "AURA Visual Upgrade ${{ github.ref_name }}"

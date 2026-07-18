@@ -1,0 +1,22 @@
+AURA VISUAL UPGRADE CHANGELOG
+=============================
+
+0.2.0 - 2026-07-18
+------------------
+- Updated author metadata to Srixun.
+- Added dynamic real-FPS and Smooth Motion displayed-FPS targets.
+- Added an About button to the main dashboard.
+- Expanded the Interface Options About page and configuration launcher.
+- Added complete /auravis command guidance.
+- Added the supplied circular AURA minimap artwork.
+- Tightened the wordmark crop and removed the overlapping Blizzard border so the logo remains readable at minimap size.
+- Added the AURA community Discord and PvP welcome message to About.
+
+0.1.0 - 2026-07-18
+------------------
+- Initial public-preview release.
+- Added native in-game graphics dashboard and /auravis.
+- Added Performance, Balanced, Quality, and Recommended profiles.
+- Added staged apply flow and graphics-restart confirmation.
+- Added external DX11/DX12, ReShade, effect, and Smooth Motion requests.
+- Added SavedVariables bridge for AURA Visual Sync.
