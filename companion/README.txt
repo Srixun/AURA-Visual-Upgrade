@@ -83,18 +83,19 @@ staff approval.
 
 AURA IN-GAME ADDON
 ------------------
-The recommended ReShade setup also installs "AURA Visual Upgrade" 0.2.0 by
+The recommended ReShade setup also installs "AURA Visual Upgrade" 0.3.0 by
 Srixun under
 Interface\AddOns. Use /auravis, the AV minimap button, or Interface Options to
 open its in-game dashboard. The addon provides:
 
-- Performance, Balanced, Quality, and five-second Recommended analysis
+- Performance, Raid, Balanced, Quality, and five-second Recommended analysis
 - World detail, particle, shadow, filtering, MSAA, VSync, and FPS controls
 - Performance-hit and apply-method text under every setting
 - Staged settings with one Apply button and a confirmed RestartGx prompt
 - DX11/DX12, ReShade profile/effect, and Smooth Motion request controls
 - Live real-FPS to approximate Smooth Motion displayed-FPS targets
 - About and Interface Options launch buttons
+- Peer-reported update awareness and capability-aware CVar controls
 
 Community: https://Discord.gg/AuraPub - PvP'ers welcome.
 

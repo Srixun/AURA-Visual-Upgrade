@@ -40,6 +40,10 @@ jobs:
         shell: pwsh
         run: |
           $toc = Get-Content 'addon/AURA_VisualUpgrade/AURA_VisualUpgrade.toc' -Raw
+          $data = Get-Content 'addon/AURA_VisualUpgrade/Data.lua' -Raw
           if ($toc -notmatch '(?m)^## Interface:\s*30300$') { throw 'Interface must be 30300.' }
           if ($toc -notmatch '(?m)^## Author:\s*Srixun$') { throw 'Author must be Srixun.' }
           if ($toc -notmatch '(?m)^## Version:\s*\d+\.\d+\.\d+$') { throw 'Version must use semantic versioning.' }
+          $tocVersion = [regex]::Match($toc, '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$').Groups[1].Value
+          $dataVersion = [regex]::Match($data, 'AURA\.VERSION\s*=\s*"(\d+\.\d+\.\d+)"').Groups[1].Value
+          if ($tocVersion -ne $dataVersion) { throw "TOC version $tocVersion does not match Data.lua version $dataVersion." }

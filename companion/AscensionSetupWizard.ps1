@@ -12,6 +12,10 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installerScript = Join-Path $scriptRoot 'AscensionDX11.ps1'
 $profileScript = Join-Path $scriptRoot 'AscensionGraphicsProfiles.ps1'
 $reShadeScript = Join-Path $scriptRoot 'AscensionReShade.ps1'
+$addonInstallerScript = Join-Path $scriptRoot 'Install-AURAVisualUpgrade.ps1'
+if (-not (Test-Path -LiteralPath $addonInstallerScript -PathType Leaf)) {
+    $addonInstallerScript = Join-Path (Split-Path -Parent $scriptRoot) 'installer\Install-AURAVisualUpgrade.ps1'
+}
 
 function Add-Candidate {
     param(
@@ -208,17 +212,11 @@ function Invoke-ReShade {
 
 function Install-AuraAddon {
     param([string]$Path)
-    $archive = Join-Path $scriptRoot 'AURA_VisualUpgrade.zip'
-    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw 'The embedded AURA_VisualUpgrade.zip package is missing.' }
-    $addonRoot = Join-Path $Path 'Interface\AddOns'
-    if (-not (Test-Path -LiteralPath $addonRoot)) { New-Item -ItemType Directory -Path $addonRoot -Force | Out-Null }
-    $destination = Join-Path $addonRoot 'AURA_VisualUpgrade'
-    if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
-    Expand-Archive -LiteralPath $archive -DestinationPath $addonRoot -Force
-    if (-not (Test-Path -LiteralPath (Join-Path $destination 'AURA_VisualUpgrade.toc') -PathType Leaf)) {
-        throw 'AURA Visual Upgrade addon extraction failed.'
-    }
-    Write-Host "AURA Visual Upgrade addon installed to: $destination" -ForegroundColor Green
+    if (-not (Test-Path -LiteralPath $addonInstallerScript -PathType Leaf)) { throw 'The verified AURA addon installer is missing.' }
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $addonInstallerScript, '-Action', 'Install', '-InstallPath', $Path, '-SkipUpdateCheck')
+    if ($SkipProcessCheck) { $arguments += '-SkipProcessCheck' }
+    & powershell.exe @arguments
+    if ($LASTEXITCODE -ne 0) { throw 'AURA Visual Upgrade addon installation failed.' }
 }
 
 function Confirm-AscensionClosed {

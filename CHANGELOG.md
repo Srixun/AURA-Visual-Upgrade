@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - 2026-07-18
+
+- Added peer-reported version awareness through native addon messages.
+- Added an update badge, manual peer check, and selectable official Releases link.
+- Added a Raid graphics profile.
+- Added capability-aware controls for Ascension-specific and standard safe graphics CVars.
+- Hide unsupported CVar controls and keep `gxFixLag` out of every profile.
+
 ## 0.2.0 - 2026-07-18
 
 - Updated author metadata to Srixun.

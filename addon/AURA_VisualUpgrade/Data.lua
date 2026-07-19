@@ -1,6 +1,8 @@
 local _, AURA = ...
 
-AURA.VERSION = "0.2.0"
+AURA.VERSION = "0.3.0"
+AURA.MESSAGE_PREFIX = "AURAVIS"
+AURA.RELEASES_URL = "https://github.com/Srixun/AURA-Visual-Upgrade/releases/latest"
 AURA.SETTINGS = {
     {
         id = "projectedTextures", category = "WORLD DETAIL", type = "toggle", cvar = "projectedTextures",
@@ -23,6 +25,14 @@ AURA.SETTINGS = {
         description = "Controls spell, weather, and ambient particle density.",
         choices = {
             { label = "Low", value = "0.2" }, { label = "Balanced", value = "0.5" }, { label = "High", value = "1" }
+        }
+    },
+    {
+        id = "particleDensityRaid", category = "WORLD DETAIL", type = "choice", cvar = "particleDensity_raid",
+        label = "Raid Particle Density", impact = "High", apply = "Immediate",
+        description = "Limits raid-specific spell particles while preserving the general particle setting. Shown only on supported Ascension clients.",
+        choices = {
+            { label = "Low", value = "0.2" }, { label = "Balanced", value = "0.4" }, { label = "High", value = "1" }
         }
     },
     {
@@ -62,12 +72,37 @@ AURA.SETTINGS = {
         }
     },
     {
+        id = "extShadowQuality", category = "WORLD DETAIL", type = "slider", cvar = "extShadowQuality",
+        label = "Extended Shadow Quality", impact = "High", apply = "Immediate",
+        description = "Controls Ascension's extended shadow detail from disabled to maximum. Shown only on supported clients.",
+        min = 0, max = 5, step = 1
+    },
+    {
         id = "textureFilteringMode", category = "DISPLAY", type = "choice", cvar = "textureFilteringMode",
         label = "Texture Filtering", impact = "Low", apply = "Client restart",
         description = "Improves texture clarity at oblique angles. Modern GPUs should use the highest setting.",
         choices = {
             { label = "4x", value = "3" }, { label = "8x", value = "4" }, { label = "Highest", value = "5" }
         }
+    },
+    {
+        id = "componentTextureLevel", category = "DISPLAY", type = "slider", cvar = "componentTextureLevel",
+        label = "Model Texture Detail", impact = "Medium", apply = "Client restart",
+        description = "Controls Ascension's model and component texture detail from minimum to maximum. Shown only on supported clients.",
+        min = 0, max = 9, step = 1
+    },
+    {
+        id = "baseMip", category = "DISPLAY", type = "choice", cvar = "baseMip",
+        label = "World Texture Resolution", impact = "Medium", apply = "Client restart",
+        description = "Selects world texture resolution. Lower-detail modes save video memory on constrained systems.",
+        choices = {
+            { label = "High", value = "0" }, { label = "Medium", value = "1" }, { label = "Low", value = "2" }
+        }
+    },
+    {
+        id = "ffxDeath", category = "DISPLAY", type = "toggle", cvar = "ffxDeath",
+        label = "Death Screen Effect", impact = "Low", apply = "Immediate",
+        description = "Enables the full-screen visual effect used while your character is dead."
     },
     {
         id = "gxVSync", category = "DISPLAY", type = "toggle", cvar = "gxVSync",
@@ -78,6 +113,11 @@ AURA.SETTINGS = {
         id = "gxTripleBuffer", category = "DISPLAY", type = "toggle", cvar = "gxTripleBuffer",
         label = "Triple Buffering", impact = "Low", apply = "Graphics restart",
         description = "Improves VSync frame pacing at a small VRAM and latency cost."
+    },
+    {
+        id = "gxCursor", category = "DISPLAY", type = "toggle", cvar = "gxCursor",
+        label = "Hardware Cursor", impact = "Low", apply = "Graphics restart",
+        description = "Uses the GPU cursor path when available. Disable only when diagnosing cursor rendering problems."
     },
     {
         id = "gxMultisample", category = "DISPLAY", type = "choice", cvar = "gxMultisample",
@@ -91,6 +131,16 @@ AURA.SETTINGS = {
         id = "maxFPS", category = "DISPLAY", type = "slider", cvar = "maxFPS",
         label = "Real Frame Cap", impact = "Low", apply = "Immediate",
         description = "Caps real rendered frames. The Smooth Motion displayed-FPS target updates as this slider moves.", min = 30, max = 240, step = 1
+    },
+    {
+        id = "maxFPSBk", category = "DISPLAY", type = "slider", cvar = "maxFPSBk",
+        label = "Background Frame Cap", impact = "Low", apply = "Immediate",
+        description = "Limits rendering while Ascension is in the background to reduce power use and heat.", min = 5, max = 120, step = 5
+    },
+    {
+        id = "gxFixLag", category = "TROUBLESHOOTING", type = "toggle", cvar = "gxFixLag",
+        label = "Reduce Input Lag", impact = "Low", apply = "Graphics restart",
+        description = "Troubleshooting option that changes frame synchronization. It is never changed by an AURA profile."
     },
     {
         id = "renderer", category = "AURA EXTERNAL UPGRADE", type = "external-choice",
@@ -147,23 +197,34 @@ AURA.SETTINGS = {
 
 AURA.PROFILES = {
     Performance = {
-        projectedTextures = true, specular = true, ffxGlow = true, particleDensity = "0.2", weatherDensity = "1",
-        farclip = 700, environmentDetail = 1.25, groundEffectDensity = 48, groundEffectDist = 100, shadowLevel = "0",
-        textureFilteringMode = "5", gxVSync = false, gxTripleBuffer = true, gxMultisample = "2", maxFPS = 162,
+        projectedTextures = true, specular = true, ffxGlow = true, ffxDeath = true, particleDensity = "0.2", particleDensityRaid = "0.2", weatherDensity = "1",
+        farclip = 700, environmentDetail = 1.25, groundEffectDensity = 48, groundEffectDist = 100, shadowLevel = "0", extShadowQuality = 0,
+        textureFilteringMode = "5", componentTextureLevel = 9, baseMip = "0", gxVSync = false, gxTripleBuffer = true, gxCursor = true,
+        gxMultisample = "2", maxFPS = 162, maxFPSBk = 30,
         renderer = "DX12", reshade = "Off", reshadeMXAO = false, reshadeBounce = false, reshadeBloom = false,
         reshadeColor = false, reshadeSharpen = false
     },
+    Raid = {
+        projectedTextures = true, specular = true, ffxGlow = true, ffxDeath = false, particleDensity = "0.5", particleDensityRaid = "0.4", weatherDensity = "1",
+        farclip = 700, environmentDetail = 1.25, groundEffectDensity = 32, groundEffectDist = 80, shadowLevel = "0", extShadowQuality = 0,
+        textureFilteringMode = "5", componentTextureLevel = 9, baseMip = "0", gxVSync = false, gxTripleBuffer = true, gxCursor = true,
+        gxMultisample = "1", maxFPS = 162, maxFPSBk = 30,
+        renderer = "DX12", reshade = "Off", reshadeMXAO = false, reshadeBounce = false, reshadeBloom = false,
+        reshadeColor = false, reshadeSharpen = true
+    },
     Balanced = {
-        projectedTextures = true, specular = true, ffxGlow = true, particleDensity = "0.5", weatherDensity = "3",
-        farclip = 837, environmentDetail = 1.5, groundEffectDensity = 64, groundEffectDist = 140, shadowLevel = "0",
-        textureFilteringMode = "5", gxVSync = false, gxTripleBuffer = true, gxMultisample = "1", maxFPS = 162,
+        projectedTextures = true, specular = true, ffxGlow = true, ffxDeath = true, particleDensity = "0.5", particleDensityRaid = "0.4", weatherDensity = "3",
+        farclip = 837, environmentDetail = 1.5, groundEffectDensity = 64, groundEffectDist = 140, shadowLevel = "0", extShadowQuality = 2,
+        textureFilteringMode = "5", componentTextureLevel = 9, baseMip = "0", gxVSync = false, gxTripleBuffer = true, gxCursor = true,
+        gxMultisample = "1", maxFPS = 162, maxFPSBk = 30,
         renderer = "DX12", reshade = "Balanced", reshadeMXAO = true, reshadeBounce = true, reshadeBloom = true,
         reshadeColor = true, reshadeSharpen = true
     },
     Quality = {
-        projectedTextures = true, specular = true, ffxGlow = true, particleDensity = "1", weatherDensity = "3",
-        farclip = 1100, environmentDetail = 2, groundEffectDensity = 96, groundEffectDist = 180, shadowLevel = "2",
-        textureFilteringMode = "5", gxVSync = false, gxTripleBuffer = true, gxMultisample = "1", maxFPS = 162,
+        projectedTextures = true, specular = true, ffxGlow = true, ffxDeath = true, particleDensity = "1", particleDensityRaid = "1", weatherDensity = "3",
+        farclip = 1100, environmentDetail = 2, groundEffectDensity = 96, groundEffectDist = 180, shadowLevel = "2", extShadowQuality = 5,
+        textureFilteringMode = "5", componentTextureLevel = 9, baseMip = "0", gxVSync = false, gxTripleBuffer = true, gxCursor = true,
+        gxMultisample = "1", maxFPS = 162, maxFPSBk = 30,
         renderer = "DX12", reshade = "Cinematic", reshadeMXAO = true, reshadeBounce = true, reshadeBloom = true,
         reshadeColor = true, reshadeSharpen = true
     }

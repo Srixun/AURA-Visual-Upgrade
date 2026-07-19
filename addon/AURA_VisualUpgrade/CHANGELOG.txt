@@ -1,6 +1,15 @@
 AURA VISUAL UPGRADE CHANGELOG
 =============================
 
+0.3.0 - 2026-07-18
+------------------
+- Added peer-reported version awareness over the native addon-message channel.
+- Added an update badge, manual peer check, and selectable official GitHub Releases link.
+- Added the Raid profile for encounter clarity and stable crowded-area performance.
+- Added supported Ascension controls for raid particles, extended shadows, model textures, background FPS, and other safe graphics CVars.
+- Unsupported CVar controls are now hidden instead of being staged or reported as failures.
+- Kept gxFixLag as an explicit troubleshooting control that profiles never change.
+
 0.2.0 - 2026-07-18
 ------------------
 - Updated author metadata to Srixun.

@@ -2,7 +2,7 @@
 ## Title: |cff55d6ffAURA|r Visual Upgrade
 ## Notes: In-game graphics profiles, performance guidance, and external visual-upgrade requests.
 ## Author: Srixun
-## Version: 0.2.0
+## Version: 0.3.0
 ## SavedVariables: AURAVisualUpgradeDB, AURAVisualUpgradeRequest
 
 Core.lua

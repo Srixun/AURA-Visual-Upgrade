@@ -62,6 +62,10 @@ local function GetChoiceIndex(setting, value)
         if tostring(choice.value) == tostring(value) then
             return index
         end
+        local choiceNumber, valueNumber = tonumber(choice.value), tonumber(value)
+        if choiceNumber and valueNumber and math.abs(choiceNumber - valueNumber) < 0.001 then
+            return index
+        end
     end
     return 1
 end
@@ -114,7 +118,7 @@ function AURA:RefreshRow(setting)
 end
 
 function AURA:RefreshAllRows()
-    for _, setting in ipairs(self.SETTINGS) do
+    for _, setting in ipairs(self.supportedSettings) do
         self:RefreshRow(setting)
     end
 end
@@ -146,6 +150,80 @@ function AURA:UpdateDashboard()
     local baseCap = tonumber(self.pending.maxFPS) or tonumber(self:ReadCVar("maxFPS")) or 80
     self.dashboardFrameGen:SetText(string.format("%s / ~%d target", frameGeneration and "Confirmed" or "Manual", baseCap * 2))
     self.dashboardFrameGen:SetTextColor(unpack(frameGeneration and COLORS.green or COLORS.gold))
+end
+
+function AURA:UpdateUpdateDisplay()
+    local newer = self.newestPeerVersion and self:CompareVersions(self.newestPeerVersion, self.VERSION) == 1
+    if self.updateButton then
+        self.updateButton.label:SetText(newer and "UPDATE FOUND" or "UPDATES")
+        self.updateButton.label:SetTextColor(unpack(newer and COLORS.gold or COLORS.text))
+    end
+    if self.minimapUpdateBadge then
+        if newer then self.minimapUpdateBadge:Show() else self.minimapUpdateBadge:Hide() end
+    end
+    if self.updateStatus then
+        self.updateStatus:SetText(self.peerStatus or "No peer version check has run this session.")
+        self.updateStatus:SetTextColor(unpack(newer and COLORS.gold or COLORS.muted))
+    end
+    if self.updateVersion then
+        self.updateVersion:SetText(newer and ("LOCAL v" .. self.VERSION .. "  |  PEER-REPORTED v" .. self.newestPeerVersion) or ("LOCAL v" .. self.VERSION))
+    end
+end
+
+function AURA:CreateUpdatePanel(parent)
+    local panel = CreateFrame("Frame", "AURAVisualUpgradeUpdateFrame", parent)
+    panel:SetSize(540, 230)
+    panel:SetPoint("CENTER")
+    panel:SetFrameLevel(parent:GetFrameLevel() + 20)
+    panel:EnableMouse(true)
+    SetBackdrop(panel, COLORS.background, COLORS.gold)
+    panel:Hide()
+
+    local title = CreateLabel(panel, "AURA UPDATE AWARENESS", 17, COLORS.cyan)
+    title:SetPoint("TOPLEFT", 20, -18)
+    local close = CreateButton(panel, "X", 28, 28)
+    close:SetPoint("TOPRIGHT", -14, -13)
+    close:SetScript("OnClick", function() panel:Hide() end)
+
+    self.updateVersion = CreateLabel(panel, "LOCAL v" .. self.VERSION, 10, COLORS.text)
+    self.updateVersion:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    self.updateStatus = CreateLabel(panel, "No peer version check has run this session.", 11, COLORS.muted)
+    self.updateStatus:SetPoint("TOPLEFT", self.updateVersion, "BOTTOMLEFT", 0, -10)
+    self.updateStatus:SetPoint("RIGHT", panel, "RIGHT", -20, 0)
+    self.updateStatus:SetHeight(38)
+    self.updateStatus:SetJustifyV("TOP")
+
+    local official = CreateLabel(panel, "OFFICIAL RELEASES - select the link and press Ctrl+C", 9, COLORS.gold)
+    official:SetPoint("TOPLEFT", self.updateStatus, "BOTTOMLEFT", 0, -8)
+    local link = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
+    link:SetPoint("TOPLEFT", official, "BOTTOMLEFT", 4, -7)
+    link:SetSize(490, 28)
+    link:SetAutoFocus(false)
+    link:SetFontObject(ChatFontNormal)
+    link:SetText(self.RELEASES_URL)
+    link:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    link:SetScript("OnMouseUp", function(self) self:SetFocus() self:HighlightText() end)
+
+    local check = CreateButton(panel, "CHECK PEERS", 150, 28)
+    check:SetPoint("BOTTOMLEFT", 20, 17)
+    check:SetScript("OnClick", function() AURA:CheckPeerVersions() end)
+    local selectLink = CreateButton(panel, "SELECT RELEASE LINK", 180, 28)
+    selectLink:SetPoint("LEFT", check, "RIGHT", 8, 0)
+    selectLink:SetScript("OnClick", function() link:SetFocus() link:HighlightText() end)
+    local done = CreateButton(panel, "CLOSE", 130, 28)
+    done:SetPoint("LEFT", selectLink, "RIGHT", 8, 0)
+    done:SetScript("OnClick", function() panel:Hide() end)
+
+    self.updatePanel = panel
+    self.updateLink = link
+    self:UpdateUpdateDisplay()
+end
+
+function AURA:ShowUpdatePanel()
+    if not self.updatePanel then return end
+    self:UpdateUpdateDisplay()
+    self.updatePanel:Show()
+    self.updatePanel:Raise()
 end
 
 function AURA:CreateSettingRow(parent, setting, y)
@@ -258,16 +336,27 @@ function AURA:CreateMinimapButton()
     highlight:SetBlendMode("ADD")
     highlight:SetAlpha(0.35)
 
+    local updateBadge = button:CreateTexture(nil, "OVERLAY")
+    updateBadge:SetTexture("Interface\\Buttons\\WHITE8X8")
+    updateBadge:SetSize(9, 9)
+    updateBadge:SetPoint("TOPRIGHT", -1, -1)
+    updateBadge:SetVertexColor(unpack(COLORS.gold))
+    updateBadge:Hide()
+
     button:SetScript("OnClick", function() AURA:Toggle() end)
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("AURA Visual Upgrade", 0.33, 0.84, 1)
         GameTooltip:AddLine("Open graphics profiles and visual-upgrade controls.", 0.9, 0.95, 1, true)
         GameTooltip:AddLine("/auravis", 0.95, 0.78, 0.32)
+        if AURA.newestPeerVersion and AURA:CompareVersions(AURA.newestPeerVersion, AURA.VERSION) == 1 then
+            GameTooltip:AddLine("Peer-reported update: v" .. AURA.newestPeerVersion, 0.95, 0.78, 0.32)
+        end
         GameTooltip:Show()
     end)
     button:SetScript("OnLeave", function() GameTooltip:Hide() end)
     self.minimapButton = button
+    self.minimapUpdateBadge = updateBadge
 end
 
 function AURA:CreateInterfaceOptionsEntry()
@@ -329,6 +418,9 @@ function AURA:CreateUI()
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", function(self) self:StartMoving() end)
     frame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    frame:SetScript("OnHide", function()
+        if AURA.updatePanel then AURA.updatePanel:Hide() end
+    end)
     SetBackdrop(frame, COLORS.background, COLORS.border)
     frame:Hide()
 
@@ -344,7 +436,12 @@ function AURA:CreateUI()
     local subtitle = CreateLabel(frame, "VISUAL UPGRADE", 13, COLORS.text)
     subtitle:SetPoint("LEFT", title, "RIGHT", 9, -2)
     local version = CreateLabel(frame, "v" .. self.VERSION .. "  by Srixun", 10, COLORS.muted, "RIGHT")
-    version:SetPoint("TOPRIGHT", -132, -26)
+    version:SetPoint("TOPRIGHT", -244, -26)
+
+    local updates = CreateButton(frame, "UPDATES", 105, 24)
+    updates:SetPoint("TOPRIGHT", -126, -18)
+    updates:SetScript("OnClick", function() AURA:ShowUpdatePanel() end)
+    self.updateButton = updates
 
     local about = CreateButton(frame, "ABOUT", 68, 24)
     about:SetPoint("TOPRIGHT", -50, -18)
@@ -391,19 +488,23 @@ function AURA:CreateUI()
     self.profileDisplay:SetPoint("TOPLEFT", 12, -8)
     self:UpdateProfileDisplay(AURAVisualUpgradeDB.lastProfile)
 
-    local recommended = CreateButton(profileBar, "ANALYZE & RECOMMEND", 185, 30)
+    local recommended = CreateButton(profileBar, "ANALYZE & RECOMMEND", 170, 30)
     recommended:SetPoint("BOTTOMLEFT", 12, 9)
     recommended:SetScript("OnClick", function() AURA:StartAnalysis() end)
 
-    local performance = CreateButton(profileBar, "PERFORMANCE", 145, 30)
+    local performance = CreateButton(profileBar, "PERFORMANCE", 125, 30)
     performance:SetPoint("LEFT", recommended, "RIGHT", 8, 0)
     performance:SetScript("OnClick", function() AURA:StageProfile("Performance") end)
 
-    local balanced = CreateButton(profileBar, "BALANCED", 145, 30)
-    balanced:SetPoint("LEFT", performance, "RIGHT", 8, 0)
+    local raid = CreateButton(profileBar, "RAID", 125, 30)
+    raid:SetPoint("LEFT", performance, "RIGHT", 8, 0)
+    raid:SetScript("OnClick", function() AURA:StageProfile("Raid") end)
+
+    local balanced = CreateButton(profileBar, "BALANCED", 125, 30)
+    balanced:SetPoint("LEFT", raid, "RIGHT", 8, 0)
     balanced:SetScript("OnClick", function() AURA:StageProfile("Balanced") end)
 
-    local quality = CreateButton(profileBar, "QUALITY", 145, 30)
+    local quality = CreateButton(profileBar, "QUALITY", 125, 30)
     quality:SetPoint("LEFT", balanced, "RIGHT", 8, 0)
     quality:SetScript("OnClick", function() AURA:StageProfile("Quality") end)
 
@@ -423,7 +524,7 @@ function AURA:CreateUI()
 
     local y = -4
     local currentCategory
-    for _, setting in ipairs(self.SETTINGS) do
+    for _, setting in ipairs(self.supportedSettings) do
         if setting.category ~= currentCategory then
             currentCategory = setting.category
             local category = CreateLabel(content, currentCategory, 10, currentCategory == "AURA EXTERNAL UPGRADE" and COLORS.gold or COLORS.cyan)
@@ -464,7 +565,8 @@ function AURA:CreateUI()
         AURA:LoadPendingValues()
         AURA:RefreshAllRows()
         AURA:UpdateDashboard()
-        AURA:UpdateProfileDisplay(AURAVisualUpgradeDB.lastProfile)
+        AURA:UpdateProfileDisplay(AURA.stagedProfile)
+        AURA:UpdateUpdateDisplay()
         AURA:UpdateFooter("Settings are staged until Apply is pressed.", 0.55, 0.65, 0.75)
     end)
 
@@ -472,6 +574,7 @@ function AURA:CreateUI()
     self.scrollFrame = scroll
     self:CreateMinimapButton()
     self:CreateInterfaceOptionsEntry()
+    self:CreateUpdatePanel(frame)
     self:UpdateDashboard()
     table.insert(UISpecialFrames, frame:GetName())
 end

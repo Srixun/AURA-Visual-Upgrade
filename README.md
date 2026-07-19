@@ -6,7 +6,7 @@ An in-game graphics dashboard and optional external visual-upgrade companion for
 
 ## Features
 
-- Performance, Balanced, Quality, and five-second Recommended profiles
+- Performance, Raid, Balanced, Quality, and five-second Recommended profiles
 - Live FPS and output-resolution analysis
 - Dynamic Smooth Motion targets, such as 60 real FPS to approximately 120 displayed FPS
 - World detail, particles, weather, shadows, filtering, VSync, MSAA, and FPS controls
@@ -14,6 +14,8 @@ An in-game graphics dashboard and optional external visual-upgrade companion for
 - DX11/DX12, ReShade, individual effect, and frame-generation requests
 - Custom AURA minimap button and Interface Options About page
 - `/auravis` chat command to open or close the configuration dashboard
+- Capability-aware controls that hide unsupported client CVars
+- Peer-reported in-game version awareness with an official release link
 
 ## Installation
 
@@ -46,7 +48,7 @@ Every auto-installer run checks [GitHub Releases](https://github.com/Srixun/AURA
 
 Run `Check for AURA Updates.cmd` to require an online update check. The full companion's `AURA Visual Sync and Launch.cmd` also checks for addon updates before launching the game.
 
-WoW addon Lua cannot access the internet or launch programs, so update checks cannot run from the in-game addon itself.
+The in-game **Updates** panel and `/auravis update` can ask AURA users in your guild, party, or raid which version they run. Peer reports are informational and can be spoofed; verify every reported version on the official GitHub Releases page. WoW addon Lua cannot access the internet, verify GitHub, launch programs, or install files.
 
 ## Frame Generation
 

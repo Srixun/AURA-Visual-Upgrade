@@ -1,4 +1,4 @@
-AURA VISUAL UPGRADE 0.2.0
+AURA VISUAL UPGRADE 0.3.0
 =========================
 
 Author: Srixun
@@ -17,12 +17,21 @@ WHAT IT CONTROLS
 ----------------
 - Game CVars for world detail, particles, weather, shadows, filtering, VSync,
   triple buffering, MSAA, and real-frame caps.
-- Performance, Balanced, and Quality profiles.
+- Performance, Raid, Balanced, and Quality profiles.
 - A five-second Recommended estimate based on live FPS and output resolution.
 - Staged DX11/DX12, ReShade, individual post-processing, and Smooth Motion
   requests for the external AURA companion.
 - Dynamic Smooth Motion targets on Real Frame Cap. For example, 60 real FPS
   displays approximately 120 FPS, while 90 real FPS displays approximately 180.
+- Capability-aware Ascension controls. Unsupported CVars are hidden instead of
+  being applied or reported as errors.
+
+UPDATE AWARENESS
+----------------
+The Updates button and /auravis update ask AURA users in your guild, party, or
+raid which addon version they run. Reports are informational and can be spoofed;
+always verify and install updates from the selectable official GitHub Releases
+link. Addon Lua cannot contact GitHub or install files itself.
 
 APPLY METHODS
 -------------

@@ -18,8 +18,11 @@ jobs:
         shell: pwsh
         run: |
           $toc = Get-Content 'addon/AURA_VisualUpgrade/AURA_VisualUpgrade.toc' -Raw
+          $data = Get-Content 'addon/AURA_VisualUpgrade/Data.lua' -Raw
           $version = [regex]::Match($toc, '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$').Groups[1].Value
           if (-not $version) { throw 'Unable to read addon version.' }
+          $dataVersion = [regex]::Match($data, 'AURA\.VERSION\s*=\s*"(\d+\.\d+\.\d+)"').Groups[1].Value
+          if ($version -ne $dataVersion) { throw "TOC version $version does not match Data.lua version $dataVersion." }
           if ("v$version" -ne '${{ github.ref_name }}') { throw "Tag ${{ github.ref_name }} does not match addon version $version." }
           Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
             $errors = $null
@@ -27,6 +30,16 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors.Count) { throw "PowerShell syntax error in $($_.FullName): $($errors.Message -join '; ')" }
           }
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Validate Lua 5.1 syntax
+        shell: pwsh
+        run: |
+          npm install --no-save --no-audit --no-fund luaparse@0.3.1
+          node -e "const fs=require('fs'),p=require('luaparse'),cp=require('child_process');const files=cp.execFileSync('git',['ls-files','*.lua'],{encoding:'utf8'}).trim().split(/\r?\n/).filter(Boolean);for(const f of files){p.parse(fs.readFileSync(f,'utf8'),{luaVersion:'5.1'});console.log('VALID '+f)}"
 
       - name: Build release assets
         shell: pwsh
