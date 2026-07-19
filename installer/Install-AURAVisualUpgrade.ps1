@@ -105,10 +105,11 @@ function ConvertTo-SemanticVersion([string]$Value) {
     try { return [version]$Value } catch { return $null }
 }
 
-function Get-Checksum([string]$Path) {
+function Get-Checksum([string]$Path, [string]$ExpectedName = 'AURA-Visual-Upgrade-Addon.zip') {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Checksum file '$Path' is missing." }
-    $match = [regex]::Match([System.IO.File]::ReadAllText($Path), '(?i)\b([a-f0-9]{64})\b')
-    if (-not $match.Success) { throw "Checksum file '$Path' is malformed." }
+    $text = [System.IO.File]::ReadAllText($Path).Trim()
+    $match = [regex]::Match($text, '^(?i)([a-f0-9]{64})\s+\*?(.+)$')
+    if (-not $match.Success -or $match.Groups[2].Value.Trim() -ne $ExpectedName) { throw "Checksum file '$Path' is malformed or names the wrong asset." }
     return $match.Groups[1].Value.ToUpperInvariant()
 }
 
@@ -116,12 +117,31 @@ function Get-PayloadVersion([string]$ArchivePath) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
     try {
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($archiveEntry in $archive.Entries) {
+            $normalized = $archiveEntry.FullName.Replace('\', '/')
+            if ($normalized -match '(^/|^[A-Za-z]:|(^|/)\.\.(/|$))' -or -not $normalized.StartsWith('AURA_VisualUpgrade/')) {
+                throw "Addon archive '$ArchivePath' contains unsafe or unexpected entry '$normalized'."
+            }
+            if (-not $seen.Add($normalized)) { throw "Addon archive '$ArchivePath' contains duplicate entry '$normalized'." }
+        }
         $toc = @($archive.Entries | Where-Object { $_.FullName -match '(^|[\\/])AURA_VisualUpgrade[\\/]AURA_VisualUpgrade\.toc$' })
         if ($toc.Count -ne 1) { throw "Addon archive '$ArchivePath' does not contain exactly one AURA TOC file." }
         $reader = New-Object System.IO.StreamReader($toc[0].Open())
         try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
         $match = [regex]::Match($text, '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$')
         if (-not $match.Success) { throw "Addon archive '$ArchivePath' has no valid version metadata." }
+        $root = $toc[0].FullName.Substring(0, $toc[0].FullName.Length - 'AURA_VisualUpgrade.toc'.Length).Replace('\', '/')
+        foreach ($line in ($text -split '\r?\n')) {
+            $entry = $line.Trim()
+            if (-not $entry -or $entry.StartsWith('#')) { continue }
+            if ($entry -notmatch '\.(lua|xml)$') { continue }
+            if ($entry -match '(^[\\/]|\.\.)') { throw "TOC entry '$entry' is unsafe." }
+            $expectedPath = ($root + $entry.Replace('\', '/'))
+            if (@($archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $expectedPath }).Count -ne 1) {
+                throw "Addon archive '$ArchivePath' is missing TOC entry '$entry'."
+            }
+        }
         return $match.Groups[1].Value
     } finally {
         $archive.Dispose()
@@ -170,6 +190,31 @@ function Get-BundledPayload {
     return [pscustomobject]@{ Path=$payloadPath; Hash=$expected; Version=(Get-PayloadVersion $payloadPath); TempRoot=$null; Source='bundled package' }
 }
 
+function Test-AddonMatchesPayload([string]$AddonPath, [string]$ArchivePath) {
+    if (-not (Test-Path -LiteralPath $AddonPath -PathType Container)) { return $false }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $entries = @($archive.Entries | Where-Object { -not [string]::IsNullOrEmpty($_.Name) })
+        $installedFiles = @(Get-ChildItem -LiteralPath $AddonPath -File -Recurse)
+        if ($entries.Count -ne $installedFiles.Count) { return $false }
+        foreach ($entry in $entries) {
+            $normalized = $entry.FullName.Replace('\', '/')
+            $relative = $normalized.Substring('AURA_VisualUpgrade/'.Length).Replace('/', '\')
+            $installed = Join-Path $AddonPath $relative
+            if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) { return $false }
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $stream = $entry.Open()
+                try { $expected = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }
+                finally { $stream.Dispose() }
+            } finally { $sha.Dispose() }
+            if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $expected) { return $false }
+        }
+        return $true
+    } finally { $archive.Dispose() }
+}
+
 function Install-Addon([string]$TargetPath, [object]$Payload) {
     Assert-ClientClosed
     $actualHash = (Get-FileHash -LiteralPath $Payload.Path -Algorithm SHA256).Hash.ToUpperInvariant()
@@ -178,30 +223,46 @@ function Install-Addon([string]$TargetPath, [object]$Payload) {
     $addonRoot = Join-Path $TargetPath 'Interface\AddOns'
     if (-not (Test-Path -LiteralPath $addonRoot)) { New-Item -ItemType Directory -Path $addonRoot -Force | Out-Null }
     $destination = Join-Path $addonRoot 'AURA_VisualUpgrade'
+    $staging = Join-Path $addonRoot ('.AURA_VisualUpgrade.staging-' + [guid]::NewGuid().ToString('N'))
     $backup = $null
+    $activated = $false
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('AURAVisualUpgrade-' + [guid]::NewGuid().ToString('N'))
 
     try {
         New-Item -ItemType Directory -Path $tempRoot | Out-Null
         Expand-Archive -LiteralPath $Payload.Path -DestinationPath $tempRoot -Force
         $source = Join-Path $tempRoot 'AURA_VisualUpgrade'
-        foreach ($name in @('AURA_VisualUpgrade.toc', 'Core.lua', 'Data.lua', 'UI.lua')) {
+        foreach ($name in @('AURA_VisualUpgrade.toc', 'Core.lua', 'Data.lua', 'Theme.lua', 'UI.lua')) {
             if (-not (Test-Path -LiteralPath (Join-Path $source $name) -PathType Leaf)) { throw "Payload file '$name' is missing." }
         }
 
+        Copy-Item -LiteralPath $source -Destination $staging -Recurse
+        $sourceFiles = @(Get-ChildItem -LiteralPath $source -File -Recurse)
+        $stagedFiles = @(Get-ChildItem -LiteralPath $staging -File -Recurse)
+        if ($sourceFiles.Count -ne $stagedFiles.Count) { throw 'Staged addon file count does not match the verified payload.' }
+        foreach ($file in $sourceFiles) {
+            $relative = $file.FullName.Substring($source.Length).TrimStart('\')
+            $installed = Join-Path $staging $relative
+            if (-not (Test-Path -LiteralPath $installed) -or (Get-FileHash -Algorithm SHA256 $installed).Hash -ne (Get-FileHash -Algorithm SHA256 $file.FullName).Hash) {
+                throw "Staged file '$relative' failed verification."
+            }
+        }
+
         if (Test-Path -LiteralPath $destination) {
-            $backup = Join-Path $addonRoot ('.AURA_VisualUpgrade.backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            $backup = Join-Path $addonRoot ('.AURA_VisualUpgrade.backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
             Move-Item -LiteralPath $destination -Destination $backup
         }
-        Copy-Item -LiteralPath $source -Destination $destination -Recurse
+        Move-Item -LiteralPath $staging -Destination $destination
+        $activated = $true
         if ($Payload.Version -and (Get-AddonVersion $destination) -ne $Payload.Version) {
             throw "Installed addon version does not match payload version $($Payload.Version)."
         }
 
-        foreach ($file in Get-ChildItem -LiteralPath $source -File) {
-            $installed = Join-Path $destination $file.Name
+        foreach ($file in $sourceFiles) {
+            $relative = $file.FullName.Substring($source.Length).TrimStart('\')
+            $installed = Join-Path $destination $relative
             if (-not (Test-Path -LiteralPath $installed) -or (Get-FileHash -Algorithm SHA256 $installed).Hash -ne (Get-FileHash -Algorithm SHA256 $file.FullName).Hash) {
-                throw "Installed file '$($file.Name)' failed verification."
+                throw "Installed file '$relative' failed verification."
             }
         }
 
@@ -213,10 +274,11 @@ function Install-Addon([string]$TargetPath, [object]$Payload) {
         if ($backup) { Write-Host "Backup:       $backup" }
         Write-Host 'Open it in-game with /auravis or the AV minimap button.' -ForegroundColor Cyan
     } catch {
-        if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
+        if ($activated -and (Test-Path -LiteralPath $destination)) { Remove-Item -LiteralPath $destination -Recurse -Force }
         if ($backup -and (Test-Path -LiteralPath $backup)) { Move-Item -LiteralPath $backup -Destination $destination }
         throw
     } finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
     }
 }
@@ -255,35 +317,49 @@ function Install-WithUpdateCheck([string]$TargetPath, [bool]$RequireRemoteUpdate
     $installedPath = Join-Path $TargetPath 'Interface\AddOns\AURA_VisualUpgrade'
     $installedVersion = Get-AddonVersion $installedPath
     $installedSemanticVersion = ConvertTo-SemanticVersion $installedVersion
-    $payload = $null
+    $bundled = Get-BundledPayload
+    $payload = $bundled
     try {
         if ($SkipUpdateCheck) {
             if ($RequireRemoteUpdate) { throw 'Update checks were disabled with -SkipUpdateCheck.' }
-            $payload = Get-BundledPayload
         } else {
             $release = Get-LatestRelease
             $latestVersion = ([string]$release.tag_name).TrimStart('v')
-            if ($installedSemanticVersion -and [version]$latestVersion -le $installedSemanticVersion) {
-                $description = if ([version]$latestVersion -eq $installedSemanticVersion) { 'already current' } else { "newer than the latest published version $latestVersion" }
-                Write-Host "AURA Visual Upgrade $installedVersion is $description; the installed addon was preserved." -ForegroundColor Green
+            $latestSemanticVersion = ConvertTo-SemanticVersion $latestVersion
+            $bundledSemanticVersion = ConvertTo-SemanticVersion $bundled.Version
+            if (-not $latestSemanticVersion) { throw "Release tag '$($release.tag_name)' is not semantic." }
+            if (-not $bundledSemanticVersion) { throw "Bundled version '$($bundled.Version)' is not semantic." }
+            if ($RequireRemoteUpdate -and $installedSemanticVersion -and $latestSemanticVersion -lt $installedSemanticVersion) {
+                Write-Host "AURA Visual Upgrade $installedVersion is newer than release $latestVersion." -ForegroundColor Green
                 return
             }
-            Write-Host "Using GitHub release $($release.tag_name)..." -ForegroundColor Cyan
-            $payload = Download-ReleasePayload $release
+            if ($latestSemanticVersion -gt $bundledSemanticVersion) {
+                Write-Host "Using GitHub release $($release.tag_name)..." -ForegroundColor Cyan
+                $payload = Download-ReleasePayload $release
+            } elseif ($latestSemanticVersion -lt $bundledSemanticVersion) {
+                Write-Warning "Published release $latestVersion is older than bundled version $($bundled.Version); using the bundle."
+            }
         }
     } catch {
         if ($RequireRemoteUpdate) { throw }
         Write-Warning "Online update check unavailable: $($_.Exception.Message)"
         Write-Host 'Using the verified bundled addon payload.' -ForegroundColor Yellow
-        $payload = Get-BundledPayload
+        $payload = $bundled
     }
 
     $payloadSemanticVersion = ConvertTo-SemanticVersion $payload.Version
-    if ($installedSemanticVersion -and $payloadSemanticVersion -and $payloadSemanticVersion -le $installedSemanticVersion) {
-        $description = if ($payloadSemanticVersion -eq $installedSemanticVersion) { 'already current' } else { "newer than the available $($payload.Version) payload" }
-        Write-Host "AURA Visual Upgrade $installedVersion is $description; the installed addon was preserved." -ForegroundColor Green
+    if ($installedSemanticVersion -and $payloadSemanticVersion -and $payloadSemanticVersion -lt $installedSemanticVersion) {
+        Write-Host "AURA Visual Upgrade $installedVersion is newer than the available $($payload.Version) payload; the installation was preserved." -ForegroundColor Green
         if ($payload.TempRoot -and (Test-Path -LiteralPath $payload.TempRoot)) { Remove-Item -LiteralPath $payload.TempRoot -Recurse -Force }
         return
+    }
+    if ($installedSemanticVersion -and $payloadSemanticVersion -and $payloadSemanticVersion -eq $installedSemanticVersion) {
+        if (Test-AddonMatchesPayload $installedPath $payload.Path) {
+            Write-Host "AURA Visual Upgrade $installedVersion is already installed and verified." -ForegroundColor Green
+            if ($payload.TempRoot -and (Test-Path -LiteralPath $payload.TempRoot)) { Remove-Item -LiteralPath $payload.TempRoot -Recurse -Force }
+            return
+        }
+        Write-Warning "AURA Visual Upgrade $installedVersion is incomplete or differs from the verified payload; repairing it."
     }
 
     try { Install-Addon $TargetPath $payload }

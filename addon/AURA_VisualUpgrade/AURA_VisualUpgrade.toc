@@ -1,10 +1,11 @@
 ## Interface: 30300
 ## Title: |cff55d6ffAURA|r Visual Upgrade
-## Notes: In-game graphics profiles, performance guidance, and external visual-upgrade requests.
+## Notes: Hardware-neutral adaptive optimization, graphics profiles, and optional external visual requests.
 ## Author: Srixun
-## Version: 0.3.0
+## Version: 0.4.0
 ## SavedVariables: AURAVisualUpgradeDB, AURAVisualUpgradeRequest
 
 Core.lua
 Data.lua
+Theme.lua
 UI.lua

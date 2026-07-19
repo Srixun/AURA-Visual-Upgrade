@@ -21,6 +21,7 @@ function Resolve-InstallPath([string]$RequestedPath) {
         throw "Ascension.exe was not found in '$candidate'."
     }
 
+    $candidates = New-Object System.Collections.ArrayList
     $cachePath = Join-Path $env:APPDATA 'projectascension\Cache\Cache_Data'
     if (Test-Path -LiteralPath $cachePath) {
         foreach ($file in Get-ChildItem -LiteralPath $cachePath -File -ErrorAction SilentlyContinue) {
@@ -30,15 +31,17 @@ function Resolve-InstallPath([string]$RequestedPath) {
                 if ($match.Success) {
                     $root = ('"' + $match.Groups[1].Value + '"') | ConvertFrom-Json
                     if (Test-Path -LiteralPath (Join-Path $root 'Ascension.exe') -PathType Leaf) {
-                        return [System.IO.Path]::GetFullPath($root).TrimEnd('\')
+                        $full = [System.IO.Path]::GetFullPath($root).TrimEnd('\')
+                        if (@($candidates | Where-Object { $_ -ieq $full }).Count -eq 0) { [void]$candidates.Add($full) }
                     }
                 }
             } catch {}
         }
     }
-
-    foreach ($candidate in @('E:\Games\Ascension', 'D:\Ascensiontest')) {
-        if (Test-Path -LiteralPath (Join-Path $candidate 'Ascension.exe') -PathType Leaf) { return $candidate }
+    if ($candidates.Count -eq 1) { return [string]$candidates[0] }
+    if ($candidates.Count -gt 1) {
+        Write-Host 'Multiple launcher installations were found; select the intended folder:' -ForegroundColor Yellow
+        $candidates | ForEach-Object { Write-Host "  $_" }
     }
 
     Add-Type -AssemblyName System.Windows.Forms
@@ -106,6 +109,7 @@ function Get-AuraRequest([string]$TargetPath) {
     return [pscustomobject]@{
         File = $requestFile.FullName
         Profile = Get-LuaString $table 'profile' 'Custom'
+        ExternalRequested = Get-LuaBoolean $table 'externalRequested' $false
         Renderer = Get-LuaString $table 'renderer' 'DX12'
         ReShade = Get-LuaString $table 'reshade' 'Off'
         ReShadeMXAO = Get-LuaBoolean $table 'reshadeMXAO' $true
@@ -114,7 +118,7 @@ function Get-AuraRequest([string]$TargetPath) {
         ReShadeColor = Get-LuaBoolean $table 'reshadeColor' $true
         ReShadeSharpen = Get-LuaBoolean $table 'reshadeSharpen' $true
         FrameGeneration = Get-LuaBoolean $table 'frameGeneration' $false
-        StaffApproval = Get-LuaBoolean $table 'staffApproval' $false
+        UnrestrictedReShade = Get-LuaBoolean $table 'unrestrictedReShade' (Get-LuaBoolean $table 'staffApproval' $false)
         BaseFrameCap = [int](Get-LuaNumber $table 'baseFrameCap' 80)
         Serial = [int](Get-LuaNumber $table 'serial' 0)
     }
@@ -161,6 +165,20 @@ function Set-ReShadeTechniques([string]$TargetPath, [object]$Request) {
 
 try {
     $target = Resolve-InstallPath $InstallPath
+    $request = Get-AuraRequest $target
+    Write-Host 'AURA Visual Upgrade request' -ForegroundColor Cyan
+    Write-Host "  Installation:     $target"
+    Write-Host "  SavedVariables:   $($request.File)"
+    Write-Host "  Request serial:   $($request.Serial)"
+    Write-Host "  Profile:          $($request.Profile)"
+    Write-Host "  External changes: $(if ($request.ExternalRequested) { 'Requested' } else { 'Not requested' })"
+    Write-Host "  Renderer:         $($request.Renderer)"
+    Write-Host "  ReShade:          $($request.ReShade)"
+    Write-Host "  Unrestricted:     $(if ($request.UnrestrictedReShade) { 'Enabled' } else { 'Disabled' })"
+    Write-Host "  Frame generation: $(if ($request.FrameGeneration) { 'Confirmed manually' } else { 'Not confirmed' })"
+    Write-Host "  Base frame cap:   $($request.BaseFrameCap)"
+
+    if ($Action -eq 'Preview') { exit 0 }
     if (-not $SkipAddonUpdate -and (Test-Path -LiteralPath $addonUpdater -PathType Leaf)) {
         Write-Host 'Checking GitHub for AURA addon updates...' -ForegroundColor Cyan
         $updateArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $addonUpdater, '-Action', 'Install', '-InstallPath', $target)
@@ -169,21 +187,15 @@ try {
         if ($LASTEXITCODE -ne 0) { Write-Warning 'Addon update failed; continuing with the currently installed version.' }
         Write-Host ''
     }
-    $request = Get-AuraRequest $target
-    Write-Host 'AURA Visual Upgrade request' -ForegroundColor Cyan
-    Write-Host "  Installation:     $target"
-    Write-Host "  SavedVariables:   $($request.File)"
-    Write-Host "  Request serial:   $($request.Serial)"
-    Write-Host "  Profile:          $($request.Profile)"
-    Write-Host "  Renderer:         $($request.Renderer)"
-    Write-Host "  ReShade:          $($request.ReShade)"
-    Write-Host "  Frame generation: $(if ($request.FrameGeneration) { 'Confirmed manually' } else { 'Not confirmed' })"
-    Write-Host "  Base frame cap:   $($request.BaseFrameCap)"
-
-    if ($Action -eq 'Preview') { exit 0 }
     if (-not $SkipProcessCheck -and @(Get-Process -Name Ascension -ErrorAction SilentlyContinue).Count -gt 0) { throw 'Close all Ascension clients before running AURA Visual Sync.' }
-    if ($request.ReShade -ne 'Off' -and -not $request.StaffApproval) {
-        throw 'ReShade depth access was requested without the in-game staff-approval confirmation. No external changes were made.'
+    if (-not $request.ExternalRequested) {
+        Write-Host ''
+        Write-Host 'No external graphics changes were requested. Renderer and ReShade were preserved.' -ForegroundColor Green
+        if ($Launch) { Start-Process -FilePath (Join-Path $target 'Ascension.exe') -WorkingDirectory $target }
+        exit 0
+    }
+    if ($request.ReShade -ne 'Off' -and -not $request.UnrestrictedReShade) {
+        throw 'The selected ReShade profile uses multiplayer depth access. Enable Unrestricted ReShade in AURA or set the ReShade profile to Off. No external changes were made.'
     }
 
     $d3d9 = Join-Path $target 'd3d9.dll'
@@ -204,6 +216,7 @@ try {
     } else {
         $preset = if ($request.ReShade -eq 'Cinematic') { 'Cinematic' } else { 'Balanced' }
         $arguments = @('-Action', 'Install', '-Preset', $preset, '-InstallPath', $target)
+        if ($request.UnrestrictedReShade) { $arguments += '-EnableUnrestricted' }
         if ($SkipProcessCheck) { $arguments += '-SkipProcessCheck' }
         Invoke-CheckedScript $reShadeScript $arguments
         Set-ReShadeTechniques $target $request
@@ -213,7 +226,6 @@ try {
     Set-KeyValue (Join-Path $target 'dgVoodoo.conf') 'OutputAPI' $outputApi
     Set-KeyValue (Join-Path $target 'dgVoodoo.conf') 'PresentationModel' 'flip_discard'
     Set-KeyValue (Join-Path $target 'dgVoodoo.conf') 'dgVoodooWatermark' 'false'
-    Set-WtfValue (Join-Path $target 'WTF\Config.wtf') 'maxFPS' ([math]::Max(30, [math]::Min(240, $request.BaseFrameCap)))
     if ($request.ReShade -ne 'Off') { Set-WtfValue (Join-Path $target 'WTF\Config.wtf') 'gxMultisample' '1' }
 
     Write-Host ''

@@ -12,10 +12,12 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Validate release version and scripts
-        shell: pwsh
+        shell: powershell
         run: |
           $toc = Get-Content 'addon/AURA_VisualUpgrade/AURA_VisualUpgrade.toc' -Raw
           $data = Get-Content 'addon/AURA_VisualUpgrade/Data.lua' -Raw
@@ -24,6 +26,12 @@ jobs:
           $dataVersion = [regex]::Match($data, 'AURA\.VERSION\s*=\s*"(\d+\.\d+\.\d+)"').Groups[1].Value
           if ($version -ne $dataVersion) { throw "TOC version $version does not match Data.lua version $dataVersion." }
           if ("v$version" -ne '${{ github.ref_name }}') { throw "Tag ${{ github.ref_name }} does not match addon version $version." }
+          foreach ($line in ($toc -split '\r?\n')) {
+            $entry = $line.Trim()
+            if (-not $entry -or $entry.StartsWith('#') -or $entry -notmatch '\.(lua|xml)$') { continue }
+            if ($entry -match '(^[\\/]|\.\.)') { throw "Unsafe TOC entry: $entry" }
+            if (-not (Test-Path -LiteralPath (Join-Path 'addon/AURA_VisualUpgrade' $entry) -PathType Leaf)) { throw "Missing TOC entry: $entry" }
+          }
           Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
             $errors = $null
             $tokens = $null
@@ -31,19 +39,16 @@ jobs:
             if ($errors.Count) { throw "PowerShell syntax error in $($_.FullName): $($errors.Message -join '; ')" }
           }
 
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-
       - name: Validate Lua 5.1 syntax
-        shell: pwsh
+        shell: powershell
         run: |
-          npm install --no-save --no-audit --no-fund luaparse@0.3.1
+          npm install --ignore-scripts --no-save --no-audit --no-fund luaparse@0.3.1
           node -e "const fs=require('fs'),p=require('luaparse'),cp=require('child_process');const files=cp.execFileSync('git',['ls-files','*.lua'],{encoding:'utf8'}).trim().split(/\r?\n/).filter(Boolean);for(const f of files){p.parse(fs.readFileSync(f,'utf8'),{luaVersion:'5.1'});console.log('VALID '+f)}"
 
       - name: Build release assets
-        shell: pwsh
+        shell: powershell
         run: |
+          if (Test-Path -LiteralPath 'dist') { Remove-Item -LiteralPath 'dist' -Recurse -Force }
           New-Item -ItemType Directory -Path 'dist' | Out-Null
 
           $addonZip = 'dist/AURA-Visual-Upgrade-Addon.zip'
@@ -71,8 +76,56 @@ jobs:
           $companionHash = (Get-FileHash -Algorithm SHA256 'dist/AURA-Visual-Upgrade-Companion.zip').Hash
           "$companionHash  AURA-Visual-Upgrade-Companion.zip" | Set-Content 'dist/AURA-Visual-Upgrade-Companion.zip.sha256' -Encoding ascii
 
+      - name: Verify packaged release assets
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $addonZip = 'dist/AURA-Visual-Upgrade-Addon.zip'
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $addonZip))
+          try {
+            $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
+            foreach ($required in @('AURA_VisualUpgrade/AURA_VisualUpgrade.toc','AURA_VisualUpgrade/Core.lua','AURA_VisualUpgrade/Data.lua','AURA_VisualUpgrade/Theme.lua','AURA_VisualUpgrade/UI.lua','AURA_VisualUpgrade/Textures/AURA_FullLogo.png','AURA_VisualUpgrade/Textures/AURA_FullLogo.tga')) {
+              if ($names -notcontains $required) { throw "Addon package is missing $required" }
+            }
+            $tocEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\','/') -eq 'AURA_VisualUpgrade/AURA_VisualUpgrade.toc' }
+            $reader = New-Object System.IO.StreamReader($tocEntry.Open())
+            try { $packagedToc = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            $tagVersion = '${{ github.ref_name }}'.TrimStart('v')
+            if ($packagedToc -notmatch ('(?m)^## Version:\s*' + [regex]::Escape($tagVersion) + '\s*$')) { throw 'Packaged addon version does not match the release tag.' }
+          } finally { $archive.Dispose() }
+          function Assert-OuterPackage([string]$Path, [string]$Root, [string[]]$Required) {
+            $outer = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $Path))
+            try {
+              $names = @($outer.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
+              foreach ($requiredEntry in $Required) {
+                if ($names -notcontains "$Root/$requiredEntry") { throw "$Path is missing $Root/$requiredEntry" }
+              }
+              $payloadEntry = $outer.Entries | Where-Object { $_.FullName.Replace('\','/') -eq "$Root/AURA_VisualUpgrade.zip" }
+              $checksumEntry = $outer.Entries | Where-Object { $_.FullName.Replace('\','/') -eq "$Root/AURA_VisualUpgrade.zip.sha256" }
+              $reader = New-Object System.IO.StreamReader($checksumEntry.Open())
+              try { $checksumText = $reader.ReadToEnd().Trim() } finally { $reader.Dispose() }
+              $expected = [regex]::Match($checksumText, '^(?i)([a-f0-9]{64})\s+AURA-Visual-Upgrade-Addon\.zip$').Groups[1].Value
+              if (-not $expected) { throw "$Path contains a malformed embedded checksum." }
+              $sha = [System.Security.Cryptography.SHA256]::Create()
+              try { $stream = $payloadEntry.Open(); try { $actual = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','') } finally { $stream.Dispose() } } finally { $sha.Dispose() }
+              if ($actual -ne $expected) { throw "$Path embedded addon checksum mismatch." }
+              $readmeEntry = $outer.Entries | Where-Object { $_.FullName.Replace('\','/') -eq "$Root/README.txt" }
+              $reader = New-Object System.IO.StreamReader($readmeEntry.Open())
+              try { $readme = $reader.ReadToEnd() } finally { $reader.Dispose() }
+              if ($readme -notmatch ('\b' + [regex]::Escape($tagVersion) + '\b')) { throw "$Path README does not identify v$tagVersion." }
+            } finally { $outer.Dispose() }
+          }
+          Assert-OuterPackage 'dist/AURA-Visual-Upgrade-Auto-Installer.zip' 'AURA-Visual-Upgrade-Auto-Installer' @('Install-AURAVisualUpgrade.ps1','README.txt','AURA_VisualUpgrade.zip','AURA_VisualUpgrade.zip.sha256')
+          Assert-OuterPackage 'dist/AURA-Visual-Upgrade-Companion.zip' 'AURA-Visual-Upgrade-Companion' @('AURAVisualSync.ps1','AscensionDX11.ps1','AscensionReShade.ps1','README.txt','AURA_VisualUpgrade.zip','AURA_VisualUpgrade.zip.sha256')
+          foreach ($asset in @('AURA-Visual-Upgrade-Addon.zip','AURA-Visual-Upgrade-Auto-Installer.zip','AURA-Visual-Upgrade-Companion.zip')) {
+            $expected = [regex]::Match((Get-Content "dist/$asset.sha256" -Raw).Trim(), '^(?i)([a-f0-9]{64})\s+' + [regex]::Escape($asset) + '$').Groups[1].Value
+            if (-not $expected) { throw "Malformed checksum for $asset" }
+            $actual = (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash
+            if ($actual -ne $expected) { throw "Checksum mismatch for $asset" }
+          }
+
       - name: Publish GitHub release
-        shell: pwsh
+        shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

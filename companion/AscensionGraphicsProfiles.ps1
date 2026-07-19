@@ -13,11 +13,6 @@ function Select-AscensionFolder {
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
     $dialog.Description = 'Select the wrapped folder containing Ascension.exe'
     $dialog.ShowNewFolderButton = $false
-    if (Test-Path -LiteralPath 'D:\Ascensiontest') {
-        $dialog.SelectedPath = 'D:\Ascensiontest'
-    } elseif (Test-Path -LiteralPath 'E:\Games\Ascension') {
-        $dialog.SelectedPath = 'E:\Games\Ascension'
-    }
     if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
         throw 'No Ascension folder was selected.'
     }
@@ -30,7 +25,7 @@ function Select-Profile {
     Write-Host '  2. DX12 Balanced (recommended test)'
     Write-Host '  3. DX12 Performance'
     Write-Host '  4. DX12 Quality'
-    Write-Host '  5. DX12 Frame Generation (80 real FPS to approximately 160 displayed FPS)'
+    Write-Host '  5. DX12 Frame Generation (real-FPS cap derived from display refresh)'
     Write-Host '  6. Restore settings from before first profile change'
     $choice = Read-Host 'Choice'
     switch ($choice) {
@@ -61,6 +56,13 @@ function Set-WtfValue {
         return [regex]::Replace($Text, $pattern, $replacement, 1)
     }
     return $Text.TrimEnd() + [Environment]::NewLine + $replacement + [Environment]::NewLine
+}
+
+function Get-WtfValue {
+    param([string]$Text, [string]$Name, [string]$Default)
+    $match = [regex]::Match($Text, '(?m)^SET\s+' + [regex]::Escape($Name) + '\s+"([^"]*)"\s*$')
+    if ($match.Success) { return $match.Groups[1].Value }
+    return $Default
 }
 
 try {
@@ -104,35 +106,41 @@ try {
         Copy-Item -LiteralPath $wtfConfigPath -Destination $wtfBackup
     }
 
+    $wtfConfig = [System.IO.File]::ReadAllText($wtfConfigPath)
+    $currentFrameCap = Get-WtfValue $wtfConfig 'maxFPS' '60'
+    $refreshRate = 0
+    [void][int]::TryParse((Get-WtfValue $wtfConfig 'gxRefresh' '0'), [ref]$refreshRate)
+    $frameGenerationCap = if ($refreshRate -ge 60) { [math]::Max(30, [math]::Floor($refreshRate / 2)) } else { $currentFrameCap }
+
     $settings = switch ($Profile) {
         'DX11Balanced' {
             @{
                 OutputAPI = 'd3d11_fl11_0'; MSAA = '4'; FarClip = '837'; Shadow = '0'
-                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'; FrameCap = '162'
+                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'
             }
         }
         'DX12Balanced' {
             @{
                 OutputAPI = 'd3d12_fl12_0'; MSAA = '4'; FarClip = '837'; Shadow = '0'
-                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'; FrameCap = '162'
+                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'
             }
         }
         'DX12Performance' {
             @{
                 OutputAPI = 'd3d12_fl12_0'; MSAA = '2'; FarClip = '700'; Shadow = '0'
-                GroundDensity = '48'; GroundDistance = '110'; Environment = '1.25'; FrameCap = '162'
+                GroundDensity = '48'; GroundDistance = '110'; Environment = '1.25'
             }
         }
         'DX12Quality' {
             @{
                 OutputAPI = 'd3d12_fl12_0'; MSAA = '4'; FarClip = '1100'; Shadow = '2'
-                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'; FrameCap = '162'
+                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'
             }
         }
         'DX12FrameGeneration' {
             @{
                 OutputAPI = 'd3d12_fl12_0'; MSAA = '4'; FarClip = '837'; Shadow = '0'
-                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'; FrameCap = '80'
+                GroundDensity = '64'; GroundDistance = '140'; Environment = '1.5'; FrameCap = [string]$frameGenerationCap
             }
         }
     }
@@ -141,7 +149,6 @@ try {
     $dgConfig = Set-DgVoodooValue $dgConfig 'OutputAPI' $settings.OutputAPI
     $dgConfig = Set-DgVoodooValue $dgConfig 'PresentationModel' 'flip_discard'
     $dgConfig = Set-DgVoodooValue $dgConfig 'FPSLimit' '0'
-    $dgConfig = Set-DgVoodooValue $dgConfig 'VRAM' '2048'
     $dgConfig = Set-DgVoodooValue $dgConfig 'Filtering' 'appdriven'
     $dgConfig = Set-DgVoodooValue $dgConfig 'Antialiasing' 'appdriven'
     $dgConfig = Set-DgVoodooValue $dgConfig 'FastVideoMemoryAccess' 'false'
@@ -149,10 +156,8 @@ try {
     $dgConfig = Set-DgVoodooValue $dgConfig 'D3D12BoundsChecking' 'false'
     $dgConfig = Set-DgVoodooValue $dgConfig 'dgVoodooWatermark' 'false'
 
-    $wtfConfig = [System.IO.File]::ReadAllText($wtfConfigPath)
     $wtfConfig = Set-WtfValue $wtfConfig 'gxMultisample' $settings.MSAA
-    $wtfConfig = Set-WtfValue $wtfConfig 'maxFPS' $settings.FrameCap
-    $wtfConfig = Set-WtfValue $wtfConfig 'textureFilteringMode' '5'
+    if ($settings.ContainsKey('FrameCap')) { $wtfConfig = Set-WtfValue $wtfConfig 'maxFPS' $settings.FrameCap }
     $wtfConfig = Set-WtfValue $wtfConfig 'farclip' $settings.FarClip
     $wtfConfig = Set-WtfValue $wtfConfig 'shadowLevel' $settings.Shadow
     $wtfConfig = Set-WtfValue $wtfConfig 'groundEffectDensity' $settings.GroundDensity
@@ -167,13 +172,13 @@ try {
     Write-Host "Renderer:          $($settings.OutputAPI)"
     Write-Host 'Presentation:      flip-discard'
     Write-Host "MSAA:              $($settings.MSAA)x"
-    Write-Host "Frame cap:         $($settings.FrameCap) FPS"
+    Write-Host "Frame cap:         $(if ($settings.ContainsKey('FrameCap')) { "$($settings.FrameCap) FPS (derived from refresh rate)" } else { "$currentFrameCap FPS (preserved)" })"
     Write-Host "View distance:     $($settings.FarClip)"
     Write-Host "Shadow level:      $($settings.Shadow)"
     if ($Profile -eq 'DX12FrameGeneration') {
         Write-Host ''
         Write-Host 'Next: enable Smooth Motion for Ascension.exe in NVIDIA App.' -ForegroundColor Yellow
-        Write-Host 'Expected result: approximately 80 real FPS plus 80 generated FPS.'
+        Write-Host "Expected result: approximately $($settings.FrameCap) real FPS plus generated frames toward the display refresh rate."
     }
 } catch {
     Write-Host ''

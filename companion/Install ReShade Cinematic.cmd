@@ -1,5 +1,5 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0AscensionReShade.ps1" -Action Install -Preset Cinematic
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0AscensionReShade.ps1" -Action Install -Preset Cinematic -EnableUnrestricted
 echo.
 pause

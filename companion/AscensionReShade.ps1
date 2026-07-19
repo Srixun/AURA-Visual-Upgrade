@@ -4,7 +4,10 @@ param(
     [string]$InstallPath,
     [ValidateSet('Balanced', 'Cinematic')]
     [string]$Preset = 'Balanced',
-    [switch]$SkipProcessCheck
+    [switch]$SkipProcessCheck,
+    [switch]$EnableUnrestricted,
+    [switch]$EnableHighDpiOverride,
+    [switch]$MigrateLegacyBackup
 )
 
 Set-StrictMode -Version 2.0
@@ -45,7 +48,6 @@ function Resolve-GamePath([string]$Path) {
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
         $dialog.Description = 'Select the wrapped folder containing Ascension.exe'
         $dialog.ShowNewFolderButton = $false
-        if (Test-Path -LiteralPath 'D:\Ascensiontest') { $dialog.SelectedPath = 'D:\Ascensiontest' }
         if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { throw 'No Ascension folder was selected.' }
         $Path = $dialog.SelectedPath
     }
@@ -73,6 +75,124 @@ function Set-DgValue([string]$Text, [string]$Name, [string]$Value) {
     $pattern = '(?m)^' + [regex]::Escape($Name) + '\s*=.*$'
     if (-not [regex]::IsMatch($Text, $pattern)) { throw "dgVoodoo setting '$Name' was not found." }
     return [regex]::Replace($Text, $pattern, ($Name.PadRight(36) + '= ' + $Value), 1)
+}
+
+function Restore-OwnedWtfValue([string]$Current, [string]$Backup, [string]$Name, [string]$Expected) {
+    $pattern = '(?m)^SET\s+' + [regex]::Escape($Name) + '\s+"([^"]*)"\s*$'
+    $currentMatch = [regex]::Match($Current, $pattern)
+    if (-not $currentMatch.Success -or $currentMatch.Groups[1].Value -ne $Expected) { return $Current }
+    $backupMatch = [regex]::Match($Backup, $pattern)
+    if ($backupMatch.Success) { return [regex]::Replace($Current, $pattern, $backupMatch.Value, 1) }
+    return [regex]::Replace($Current, $pattern + '\r?\n?', '', 1)
+}
+
+function Restore-OwnedDgValue([string]$Current, [string]$Backup, [string]$Name, [string]$Expected) {
+    $pattern = '(?m)^' + [regex]::Escape($Name) + '\s*=\s*(.*?)\s*$'
+    $currentMatch = [regex]::Match($Current, $pattern)
+    if (-not $currentMatch.Success -or $currentMatch.Groups[1].Value -ne $Expected) { return $Current }
+    $backupMatch = [regex]::Match($Backup, $pattern)
+    if ($backupMatch.Success) { return [regex]::Replace($Current, $pattern, $backupMatch.Value, 1) }
+    return $Current
+}
+
+function Save-LiveState([string]$TargetPath, [string]$StatePath) {
+    New-Item -ItemType Directory -Path $StatePath | Out-Null
+    foreach ($name in @('dxgi.dll', 'ReShade.ini', 'Ascension_ReShade_Balanced.ini', 'Ascension_ReShade_Cinematic.ini', 'Ascension_ReShade_RTGI.ini', 'dgVoodoo.conf')) {
+        $source = Join-Path $TargetPath $name
+        if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-Item -LiteralPath $source -Destination (Join-Path $StatePath $name) }
+    }
+    $wtf = Join-Path $TargetPath 'WTF\Config.wtf'
+    if (Test-Path -LiteralPath $wtf -PathType Leaf) { Copy-Item -LiteralPath $wtf -Destination (Join-Path $StatePath 'Config.wtf') }
+    $shaders = Join-Path $TargetPath 'reshade-shaders'
+    if (Test-Path -LiteralPath $shaders) { Copy-Item -LiteralPath $shaders -Destination (Join-Path $StatePath 'reshade-shaders') -Recurse }
+    $layersPath = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
+    $layer = Get-AppCompatLayer $layersPath (Join-Path $TargetPath 'Ascension.exe')
+    if ($null -eq $layer) { [System.IO.File]::WriteAllText((Join-Path $StatePath 'Layer.absent'), '') }
+    else { [System.IO.File]::WriteAllText((Join-Path $StatePath 'Layer.txt'), $layer) }
+}
+
+function Restore-LiveState([string]$TargetPath, [string]$StatePath) {
+    foreach ($name in @('dxgi.dll', 'ReShade.ini', 'Ascension_ReShade_Balanced.ini', 'Ascension_ReShade_Cinematic.ini', 'Ascension_ReShade_RTGI.ini', 'dgVoodoo.conf')) {
+        $target = Join-Path $TargetPath $name
+        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+        $saved = Join-Path $StatePath $name
+        if (Test-Path -LiteralPath $saved -PathType Leaf) { Copy-Item -LiteralPath $saved -Destination $target }
+    }
+    $wtf = Join-Path $TargetPath 'WTF\Config.wtf'
+    $savedWtf = Join-Path $StatePath 'Config.wtf'
+    if (Test-Path -LiteralPath $savedWtf) { Copy-Item -LiteralPath $savedWtf -Destination $wtf -Force }
+    $shaders = Join-Path $TargetPath 'reshade-shaders'
+    if (Test-Path -LiteralPath $shaders) { Remove-Item -LiteralPath $shaders -Recurse -Force }
+    $savedShaders = Join-Path $StatePath 'reshade-shaders'
+    if (Test-Path -LiteralPath $savedShaders) { Copy-Item -LiteralPath $savedShaders -Destination $shaders -Recurse }
+    $layersPath = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
+    $gameExe = Join-Path $TargetPath 'Ascension.exe'
+    if (Test-Path -LiteralPath (Join-Path $StatePath 'Layer.txt')) {
+        if (-not (Test-Path -LiteralPath $layersPath)) { New-Item -Path $layersPath -Force | Out-Null }
+        Set-ItemProperty -LiteralPath $layersPath -Name $gameExe -Value ([System.IO.File]::ReadAllText((Join-Path $StatePath 'Layer.txt')))
+    } else {
+        Remove-ItemProperty -LiteralPath $layersPath -Name $gameExe -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-ReShadeBackupManifest([string]$BackupPath, [bool]$Migrated = $false) {
+    $files = @()
+    foreach ($file in Get-ChildItem -LiteralPath $BackupPath -File -Recurse | Where-Object { $_.Name -ne 'manifest.json' }) {
+        $relative = $file.FullName.Substring($BackupPath.Length).TrimStart('\')
+        $files += [pscustomobject]@{ Path = $relative; Sha256 = Get-Hash $file.FullName }
+    }
+    $manifest = [pscustomobject]@{ FormatVersion = 1; CreatedUtc = [DateTime]::UtcNow.ToString('o'); Migrated = $Migrated; Files = $files }
+    [System.IO.File]::WriteAllText((Join-Path $BackupPath 'manifest.json'), ($manifest | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Assert-ReShadeBackup([string]$BackupPath) {
+    $manifestPath = Join-Path $BackupPath 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        if (-not $MigrateLegacyBackup) {
+            throw "Legacy ReShade backup '$BackupPath' has no completion manifest. Review its contents, then rerun with -MigrateLegacyBackup to accept it explicitly."
+        }
+        $hasDgConfig = Test-Path -LiteralPath (Join-Path $BackupPath 'dgVoodoo.conf') -PathType Leaf
+        $hasWtfConfig = Test-Path -LiteralPath (Join-Path $BackupPath 'Config.wtf') -PathType Leaf
+        if (-not $hasDgConfig -or -not $hasWtfConfig) {
+            throw "ReShade backup '$BackupPath' is incomplete and has no completion manifest."
+        }
+        Write-Warning 'Migrating a verified legacy ReShade backup to the manifest format.'
+        $legacyLayerBackup = Join-Path $BackupPath 'HighDpiLayer.txt'
+        $legacyLayerAbsent = Join-Path $BackupPath 'HighDpiLayer.absent'
+        $layerManaged = Join-Path $BackupPath 'HighDpiLayer.managed'
+        if ((Test-Path -LiteralPath $legacyLayerBackup -PathType Leaf) -or (Test-Path -LiteralPath $legacyLayerAbsent -PathType Leaf)) {
+            [System.IO.File]::WriteAllText($layerManaged, '', (New-Object System.Text.UTF8Encoding($false)))
+        }
+        Write-ReShadeBackupManifest $BackupPath $true
+    }
+    $manifest = [System.IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+    if ([int]$manifest.FormatVersion -ne 1) { throw "Unsupported ReShade backup format in '$BackupPath'." }
+    foreach ($entry in @($manifest.Files)) {
+        $file = Join-Path $BackupPath ([string]$entry.Path)
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-Hash $file) -ne ([string]$entry.Sha256).ToUpperInvariant()) {
+            throw "ReShade backup file '$file' failed verification."
+        }
+    }
+}
+
+function New-ReShadeBackup([string]$TargetPath, [string]$BackupPath) {
+    $staging = $BackupPath + '.staging-' + [guid]::NewGuid().ToString('N')
+    try {
+        New-Item -ItemType Directory -Path $staging | Out-Null
+        foreach ($name in @('dxgi.dll', 'ReShade.ini', 'Ascension_ReShade_Balanced.ini', 'Ascension_ReShade_Cinematic.ini', 'Ascension_ReShade_RTGI.ini', 'dgVoodoo.conf')) {
+            $source = Join-Path $TargetPath $name
+            if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-Item -LiteralPath $source -Destination (Join-Path $staging $name) }
+        }
+        $wtf = Join-Path $TargetPath 'WTF\Config.wtf'
+        if (Test-Path -LiteralPath $wtf -PathType Leaf) { Copy-Item -LiteralPath $wtf -Destination (Join-Path $staging 'Config.wtf') }
+        $shaderDir = Join-Path $TargetPath 'reshade-shaders'
+        if (Test-Path -LiteralPath $shaderDir) { Copy-Item -LiteralPath $shaderDir -Destination (Join-Path $staging 'reshade-shaders') -Recurse }
+        Write-ReShadeBackupManifest $staging
+        Assert-ReShadeBackup $staging
+        Move-Item -LiteralPath $staging -Destination $BackupPath
+    } finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    }
 }
 
 function Copy-TreeContents([string]$Source, [string]$Destination) {
@@ -215,6 +335,9 @@ ShowForceLoadEffectsButton=1
 
 function Install-ReShade([string]$TargetPath, [string]$SelectedPreset) {
     Assert-Closed
+    if (-not $EnableUnrestricted) {
+        throw 'The included ReShade presets require unrestricted multiplayer depth access for MXAO and bounce lighting. Rerun with -EnableUnrestricted if you accept the server-policy and anti-cheat risk.'
+    }
     $dgPath = Join-Path $TargetPath 'd3d9.dll'
     if (-not (Test-Path -LiteralPath $dgPath) -or (Get-Item -LiteralPath $dgPath).VersionInfo.ProductName -ne 'dgVoodoo') {
         throw 'Install the dgVoodoo DX12 wrapper before installing ReShade.'
@@ -222,40 +345,37 @@ function Install-ReShade([string]$TargetPath, [string]$SelectedPreset) {
 
     $backupPath = Join-Path $TargetPath '.reshade-backup'
     if (-not (Test-Path -LiteralPath $backupPath)) {
-        New-Item -ItemType Directory -Path $backupPath | Out-Null
-        foreach ($name in @('dxgi.dll', 'ReShade.ini', 'Ascension_ReShade_Balanced.ini', 'Ascension_ReShade_Cinematic.ini', 'Ascension_ReShade_RTGI.ini', 'dgVoodoo.conf')) {
-            $source = Join-Path $TargetPath $name
-            if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-Item -LiteralPath $source -Destination (Join-Path $backupPath $name) }
-        }
-        $wtf = Join-Path $TargetPath 'WTF\Config.wtf'
-        if (Test-Path -LiteralPath $wtf) { Copy-Item -LiteralPath $wtf -Destination (Join-Path $backupPath 'Config.wtf') }
-        $shaderDir = Join-Path $TargetPath 'reshade-shaders'
-        if (Test-Path -LiteralPath $shaderDir) { Copy-Item -LiteralPath $shaderDir -Destination (Join-Path $backupPath 'reshade-shaders') -Recurse }
-
-    }
+        New-ReShadeBackup $TargetPath $backupPath
+    } else { Assert-ReShadeBackup $backupPath }
 
     $layersPath = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
     $gameExe = Join-Path $TargetPath 'Ascension.exe'
     $layerBackup = Join-Path $backupPath 'HighDpiLayer.txt'
     $layerAbsent = Join-Path $backupPath 'HighDpiLayer.absent'
-    if (-not (Test-Path -LiteralPath $layerBackup) -and -not (Test-Path -LiteralPath $layerAbsent)) {
+    $layerManaged = Join-Path $backupPath 'HighDpiLayer.managed'
+    if ($EnableHighDpiOverride -and -not (Test-Path -LiteralPath $layerBackup) -and -not (Test-Path -LiteralPath $layerAbsent)) {
         $existingLayer = Get-AppCompatLayer $layersPath $gameExe
         if ($null -eq $existingLayer) {
             [System.IO.File]::WriteAllText($layerAbsent, '', (New-Object System.Text.UTF8Encoding($false)))
         } else {
             [System.IO.File]::WriteAllText($layerBackup, $existingLayer, (New-Object System.Text.UTF8Encoding($false)))
         }
+        [System.IO.File]::WriteAllText($layerManaged, '', (New-Object System.Text.UTF8Encoding($false)))
     }
 
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('AscensionReShade-' + [guid]::NewGuid().ToString('N'))
+    $transactionPath = Join-Path $tempRoot 'live-state'
+    $transactionReady = $false
     try {
         New-Item -ItemType Directory -Path $tempRoot | Out-Null
+        Save-LiveState $TargetPath $transactionPath
+        $transactionReady = $true
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $setupPath = Join-Path $tempRoot 'ReShadeSetup.exe'
         Write-Host 'Downloading and verifying ReShade 6.7.3 unrestricted build...'
         Download-Verified $reShadeUrl $reShadeHash $setupPath
         $signature = Get-AuthenticodeSignature -LiteralPath $setupPath
-        if ($null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $reShadeThumbprint) {
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $reShadeThumbprint) {
             throw 'ReShade setup signing certificate did not match the official publisher thumbprint.'
         }
 
@@ -317,22 +437,29 @@ function Install-ReShade([string]$TargetPath, [string]$SelectedPreset) {
         $wtfPath = Join-Path $TargetPath 'WTF\Config.wtf'
         $wtfConfig = [System.IO.File]::ReadAllText($wtfPath)
         $wtfConfig = Set-WtfValue $wtfConfig 'gxMultisample' '1'
-        $wtfConfig = Set-WtfValue $wtfConfig 'maxFPS' '80'
         [System.IO.File]::WriteAllText($wtfPath, $wtfConfig, (New-Object System.Text.UTF8Encoding($false)))
 
-        if (-not (Test-Path -LiteralPath $layersPath)) { New-Item -Path $layersPath -Force | Out-Null }
-        $currentLayer = Get-AppCompatLayer $layersPath $gameExe
-        $newLayer = if ([string]::IsNullOrWhiteSpace($currentLayer)) { '~ HIGHDPIAWARE' } elseif ($currentLayer -notmatch 'HIGHDPIAWARE') { ($currentLayer.Trim() + ' HIGHDPIAWARE') } else { $currentLayer }
-        Set-ItemProperty -LiteralPath $layersPath -Name $gameExe -Value $newLayer
+        if ($EnableHighDpiOverride) {
+            if (-not (Test-Path -LiteralPath $layersPath)) { New-Item -Path $layersPath -Force | Out-Null }
+            $currentLayer = Get-AppCompatLayer $layersPath $gameExe
+            $newLayer = if ([string]::IsNullOrWhiteSpace($currentLayer)) { '~ HIGHDPIAWARE' } elseif ($currentLayer -notmatch 'HIGHDPIAWARE') { ($currentLayer.Trim() + ' HIGHDPIAWARE') } else { $currentLayer }
+            Set-ItemProperty -LiteralPath $layersPath -Name $gameExe -Value $newLayer
+        }
 
         Remove-Item -LiteralPath (Join-Path $TargetPath 'Ascension_ReShade_RTGI.ini') -Force -ErrorAction SilentlyContinue
         Write-ReShadeConfiguration $TargetPath $SelectedPreset
-        if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) { throw 'ReShade did not install dxgi.dll.' }
+        if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf) -or (Get-Hash $runtimePath) -ne $reShadeRuntimeHash) { throw 'The installed ReShade runtime failed its pinned hash verification.' }
 
         Write-Host ''
         Write-Host "ReShade installed successfully with the $SelectedPreset preset." -ForegroundColor Green
         Write-Host 'Renderer chain: D3D9 -> dgVoodoo -> D3D12 -> ReShade'
         Write-Host 'Home: ReShade menu   Scroll Lock: toggle effects'
+    } catch {
+        if ($transactionReady) {
+            try { Restore-LiveState $TargetPath $transactionPath; Write-Warning 'ReShade installation failed; the previous live state was restored.' }
+            catch { Write-Warning "ReShade rollback also failed: $($_.Exception.Message)" }
+        }
+        throw
     } finally {
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
     }
@@ -342,6 +469,7 @@ function Uninstall-ReShade([string]$TargetPath) {
     Assert-Closed
     $backupPath = Join-Path $TargetPath '.reshade-backup'
     if (-not (Test-Path -LiteralPath $backupPath)) { throw 'No ReShade backup was found.' }
+    Assert-ReShadeBackup $backupPath
 
     foreach ($name in @('dxgi.dll', 'ReShade.ini', 'ReShade.log', 'Ascension_ReShade_Balanced.ini', 'Ascension_ReShade_Cinematic.ini', 'Ascension_ReShade_RTGI.ini')) {
         $target = Join-Path $TargetPath $name
@@ -353,24 +481,31 @@ function Uninstall-ReShade([string]$TargetPath) {
     if (Test-Path -LiteralPath $shaderTarget) { Remove-Item -LiteralPath $shaderTarget -Recurse -Force }
     $shaderBackup = Join-Path $backupPath 'reshade-shaders'
     if (Test-Path -LiteralPath $shaderBackup) { Copy-Item -LiteralPath $shaderBackup -Destination $shaderTarget -Recurse }
-    foreach ($pair in @(@('dgVoodoo.conf','dgVoodoo.conf'), @('Config.wtf','WTF\Config.wtf'))) {
-        $source = Join-Path $backupPath $pair[0]
-        if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $TargetPath $pair[1]) -Force }
-    }
-
     $dgConfigPath = Join-Path $TargetPath 'dgVoodoo.conf'
-    if (Test-Path -LiteralPath $dgConfigPath -PathType Leaf) {
-        $dgConfig = [System.IO.File]::ReadAllText($dgConfigPath)
-        $dgConfig = Set-DgValue $dgConfig 'dgVoodooWatermark' 'false'
-        [System.IO.File]::WriteAllText($dgConfigPath, $dgConfig, (New-Object System.Text.UTF8Encoding($false)))
+    $dgBackupPath = Join-Path $backupPath 'dgVoodoo.conf'
+    if ((Test-Path -LiteralPath $dgConfigPath) -and (Test-Path -LiteralPath $dgBackupPath)) {
+        $current = [System.IO.File]::ReadAllText($dgConfigPath)
+        $backup = [System.IO.File]::ReadAllText($dgBackupPath)
+        $current = Restore-OwnedDgValue $current $backup 'OutputAPI' 'd3d12_fl12_0'
+        $current = Restore-OwnedDgValue $current $backup 'PresentationModel' 'flip_discard'
+        $current = Restore-OwnedDgValue $current $backup 'dgVoodooWatermark' 'false'
+        [System.IO.File]::WriteAllText($dgConfigPath, $current, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    $wtfPath = Join-Path $TargetPath 'WTF\Config.wtf'
+    $wtfBackupPath = Join-Path $backupPath 'Config.wtf'
+    if ((Test-Path -LiteralPath $wtfPath) -and (Test-Path -LiteralPath $wtfBackupPath)) {
+        $current = [System.IO.File]::ReadAllText($wtfPath)
+        $backup = [System.IO.File]::ReadAllText($wtfBackupPath)
+        $current = Restore-OwnedWtfValue $current $backup 'gxMultisample' '1'
+        [System.IO.File]::WriteAllText($wtfPath, $current, (New-Object System.Text.UTF8Encoding($false)))
     }
 
     $layersPath = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
     $gameExe = Join-Path $TargetPath 'Ascension.exe'
     $layerBackup = Join-Path $backupPath 'HighDpiLayer.txt'
-    if (Test-Path -LiteralPath $layerBackup) {
+    if ((Test-Path -LiteralPath (Join-Path $backupPath 'HighDpiLayer.managed')) -and (Test-Path -LiteralPath $layerBackup)) {
         Set-ItemProperty -LiteralPath $layersPath -Name $gameExe -Value ([System.IO.File]::ReadAllText($layerBackup))
-    } elseif (Test-Path -LiteralPath (Join-Path $backupPath 'HighDpiLayer.absent')) {
+    } elseif ((Test-Path -LiteralPath (Join-Path $backupPath 'HighDpiLayer.managed')) -and (Test-Path -LiteralPath (Join-Path $backupPath 'HighDpiLayer.absent'))) {
         Remove-ItemProperty -LiteralPath $layersPath -Name $gameExe -ErrorAction SilentlyContinue
     }
 

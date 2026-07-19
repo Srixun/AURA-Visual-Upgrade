@@ -153,13 +153,13 @@ function Select-Installation {
 function Select-Preset {
     Write-Host ''
     Write-Host 'Choose setup:' -ForegroundColor Cyan
-    Write-Host '  1. DX12 + Frame Generation + ReShade Balanced (recommended)'
-    Write-Host '  2. DX12 + Frame Generation + ReShade Cinematic (higher cost)'
-    Write-Host '  3. DX12 + Frame Generation'
-    Write-Host '  4. DX12 Balanced'
-    Write-Host '  5. DX11 Balanced (most compatible)'
-    Write-Host '  6. DX12 Performance'
-    Write-Host '  7. DX12 Quality'
+    Write-Host '  1. DX11 Balanced (recommended / most compatible)'
+    Write-Host '  2. DX12 Balanced'
+    Write-Host '  3. DX12 Performance'
+    Write-Host '  4. DX12 Quality'
+    Write-Host '  5. DX12 + NVIDIA Frame Generation'
+    Write-Host '  6. DX12 + ReShade Balanced (unrestricted depth access)'
+    Write-Host '  7. DX12 + ReShade Cinematic (unrestricted depth access)'
     Write-Host '  8. Install/update AURA Visual Upgrade addon only'
     Write-Host '  9. Status only'
     Write-Host '  10. Uninstall ReShade only'
@@ -167,13 +167,13 @@ function Select-Preset {
     Write-Host '  0. Exit'
     while ($true) {
         switch (Read-Host 'Setup') {
-            '1' { return 'ReShadeBalanced' }
-            '2' { return 'ReShadeCinematic' }
-            '3' { return 'FrameGeneration' }
-            '4' { return 'DX12Balanced' }
-            '5' { return 'DX11Balanced' }
-            '6' { return 'DX12Performance' }
-            '7' { return 'DX12Quality' }
+            '1' { return 'DX11Balanced' }
+            '2' { return 'DX12Balanced' }
+            '3' { return 'DX12Performance' }
+            '4' { return 'DX12Quality' }
+            '5' { return 'FrameGeneration' }
+            '6' { return 'ReShadeBalanced' }
+            '7' { return 'ReShadeCinematic' }
             '8' { return 'AddonOnly' }
             '9' { return 'Status' }
             '10' { return 'UninstallReShade' }
@@ -202,9 +202,10 @@ function Invoke-Profile {
 }
 
 function Invoke-ReShade {
-    param([string]$Action, [string]$Path, [string]$ReShadePreset)
+    param([string]$Action, [string]$Path, [string]$ReShadePreset, [bool]$EnableUnrestricted = $false)
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $reShadeScript, '-Action', $Action, '-InstallPath', $Path)
     if ($ReShadePreset) { $arguments += @('-Preset', $ReShadePreset) }
+    if ($EnableUnrestricted) { $arguments += '-EnableUnrestricted' }
     if ($SkipProcessCheck) { $arguments += '-SkipProcessCheck' }
     & powershell.exe @arguments
     if ($LASTEXITCODE -ne 0) { throw "ReShade action '$Action' failed." }
@@ -281,22 +282,18 @@ try {
 
     $renderer = if ($Preset -eq 'DX11Balanced') { 'DX11' } else { 'DX12' }
     $usesReShade = $Preset -in @('ReShadeBalanced', 'ReShadeCinematic')
-    $profileName = if ($Preset -eq 'FrameGeneration' -or $usesReShade) { 'DX12FrameGeneration' } else { $Preset }
-    if ($usesReShade) {
-        $staffApproval = Read-Host 'Confirm Ascension staff approved unrestricted depth ReShade for your account (Y/N)'
-        if ($staffApproval -notmatch '^(?i)y$') { throw 'ReShade installation cancelled because staff approval was not confirmed.' }
-    }
+    $profileName = if ($Preset -eq 'FrameGeneration') { 'DX12FrameGeneration' } elseif ($usesReShade) { 'DX12Balanced' } else { $Preset }
     Invoke-Installer 'Install' $InstallPath $renderer
     Invoke-Profile $profileName $InstallPath
     if ($usesReShade) {
         $reShadePreset = if ($Preset -eq 'ReShadeCinematic') { 'Cinematic' } else { 'Balanced' }
-        Invoke-ReShade 'Install' $InstallPath $reShadePreset
+        Invoke-ReShade 'Install' $InstallPath $reShadePreset $true
         Install-AuraAddon $InstallPath
     }
 
     Write-Host ''
     Write-Host 'Setup completed successfully.' -ForegroundColor Green
-    if ($Preset -eq 'FrameGeneration' -or $usesReShade) {
+    if ($Preset -eq 'FrameGeneration') {
         Write-Host ''
         Write-Host 'One NVIDIA setting remains:' -ForegroundColor Yellow
         Write-Host '  NVIDIA App > Graphics > Program Settings > Ascension.exe'

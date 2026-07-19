@@ -1,7 +1,7 @@
 AURA VISUAL UPGRADE AUTO-INSTALLER
 ==================================
 
-Version 0.3.0 by Srixun
+Version 0.4.0 by Srixun
 Community: https://Discord.gg/AuraPub - PvP'ers welcome.
 
 Run "START HERE - Install AURA Visual Upgrade.cmd".

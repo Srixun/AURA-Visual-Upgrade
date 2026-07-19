@@ -13,18 +13,13 @@ $ErrorActionPreference = 'Stop'
 $dgVoodooVersion = '2.87.3'
 $downloadUrl = 'https://github.com/dege-diosg/dgVoodoo2/releases/download/v2.87.3/dgVoodoo2_87_3.zip'
 $expectedArchiveHash = '6FB954BED55BF70E948C5045A663A9DF31EA206FAF105E327BAFE46C318F867F'
-$managedFiles = @('d3d9.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll', 'dxvk.conf')
-$installedFiles = @('d3d9.dll', 'dgVoodoo.conf', 'dgVoodooCpl.exe')
+$managedFiles = @('d3d9.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll', 'dxvk.conf', 'dgVoodoo.conf', 'dgVoodooCpl.exe')
 
 function Select-AscensionFolder {
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
     $dialog.Description = 'Select the folder containing Ascension.exe'
     $dialog.ShowNewFolderButton = $false
-
-    if (Test-Path -LiteralPath 'E:\Games\Ascension') {
-        $dialog.SelectedPath = 'E:\Games\Ascension'
-    }
 
     if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
         throw 'No Ascension folder was selected.'
@@ -71,6 +66,8 @@ function Restore-OriginalFiles {
         [object]$Manifest
     )
 
+    Assert-WrapperBackup -BackupPath $BackupPath -Manifest $Manifest
+
     foreach ($name in $managedFiles) {
         $target = Join-Path $TargetPath $name
         if (Test-Path -LiteralPath $target) {
@@ -101,6 +98,24 @@ function Get-Manifest {
     return (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json)
 }
 
+function Assert-WrapperBackup {
+    param([string]$BackupPath, [object]$Manifest)
+    if ($null -eq $Manifest -or [int]$Manifest.FormatVersion -ne 1) { throw "Unsupported wrapper backup format in '$BackupPath'." }
+    $allowed = @{}
+    foreach ($name in $managedFiles) { $allowed[$name.ToLowerInvariant()] = $true }
+    $seen = @{}
+    foreach ($entry in @($Manifest.OriginalFiles)) {
+        $name = [string]$entry.Name
+        $key = $name.ToLowerInvariant()
+        if (-not $allowed[$key] -or $seen[$key] -or $name -match '[\\/]') { throw "Wrapper backup manifest contains invalid entry '$name'." }
+        $seen[$key] = $true
+        $source = Join-Path $BackupPath $name
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Wrapper backup file '$source' is missing." }
+        if ((Get-FileSha256 $source) -ne ([string]$entry.Sha256).ToUpperInvariant()) { throw "Wrapper backup file '$source' failed verification." }
+    }
+    return $true
+}
+
 function Install-Wrapper {
     param([string]$TargetPath)
 
@@ -129,6 +144,23 @@ function Install-Wrapper {
         foreach ($required in @($wrapperSource, $configSource, $controlPanelSource)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
                 throw "Required package file '$required' is missing."
+            }
+        }
+
+        if (Test-Path -LiteralPath $backupPath) {
+            $existingManifest = Get-Manifest $backupPath
+            $currentExecutableHash = Get-FileSha256 (Join-Path $TargetPath 'Ascension.exe')
+            $currentWrapper = Join-Path $TargetPath 'd3d9.dll'
+            $currentProduct = if (Test-Path -LiteralPath $currentWrapper) { (Get-Item -LiteralPath $currentWrapper).VersionInfo.ProductName } else { $null }
+            if ($currentProduct -ne 'dgVoodoo') {
+                if (Test-Path -LiteralPath (Join-Path $TargetPath '.reshade-backup')) {
+                    throw 'The launcher replaced the wrapper while AURA ReShade is still installed. Uninstall ReShade before rebasing the wrapper backup.'
+                }
+                $staleBackup = Join-Path $TargetPath ('.dx11-wrapper-backup.stale-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+                Move-Item -LiteralPath $backupPath -Destination $staleBackup
+                Write-Warning "The launcher replaced the wrapper; archived its older backup and will capture a new baseline: $staleBackup"
+            } elseif ([string]$existingManifest.AscensionExecutableSha256 -ne $currentExecutableHash) {
+                    throw 'Ascension.exe changed after the wrapper backup was created. Run launcher repair until dgVoodoo is replaced, then reinstall to archive the old backup and capture the updated client baseline.'
             }
         }
 
@@ -170,12 +202,21 @@ function Install-Wrapper {
                 OriginalFiles = $originalFiles
             }
             $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backupPath 'manifest.json') -Encoding UTF8
+            [void](Assert-WrapperBackup -BackupPath $backupPath -Manifest $manifest)
             if ($useLegacyBackup) {
                 Write-Host 'Adopted the existing _dxvk_backup as the original-file source.'
             }
         } else {
             $manifest = Get-Manifest $backupPath
+            [void](Assert-WrapperBackup -BackupPath $backupPath -Manifest $manifest)
             Write-Host 'Using the existing original-file backup.'
+        }
+
+        $reportedVRAM = $null
+        $currentConfigPath = Join-Path $TargetPath 'dgVoodoo.conf'
+        if (Test-Path -LiteralPath $currentConfigPath -PathType Leaf) {
+            $vramMatch = [regex]::Match([System.IO.File]::ReadAllText($currentConfigPath), '(?m)^VRAM\s*=\s*(\S+)\s*$')
+            if ($vramMatch.Success) { $reportedVRAM = $vramMatch.Groups[1].Value }
         }
 
         foreach ($name in $managedFiles) {
@@ -192,7 +233,7 @@ function Install-Wrapper {
         $config = [System.IO.File]::ReadAllText($configSource)
         $config = $config -replace '(?m)^OutputAPI\s*=.*$', "OutputAPI                            = $outputApi"
         $config = $config -replace '(?m)^PresentationModel\s*=.*$', 'PresentationModel                    = flip_discard'
-        $config = $config -replace '(?m)^VRAM\s*=.*$', 'VRAM                                = 2048'
+        if ($reportedVRAM) { $config = $config -replace '(?m)^VRAM\s*=.*$', ('VRAM'.PadRight(36) + '= ' + $reportedVRAM) }
         $config = $config -replace '(?m)^dgVoodooWatermark\s*=.*$', 'dgVoodooWatermark                   = false'
         $config = $config -replace '(?m)^Default3DRenderFormat\s*=.*$', 'Default3DRenderFormat               = argb8888'
         [System.IO.File]::WriteAllText((Join-Path $TargetPath 'dgVoodoo.conf'), $config, (New-Object System.Text.UTF8Encoding($false)))
@@ -206,15 +247,16 @@ function Install-Wrapper {
         Write-Host "Installation: $TargetPath"
         Write-Host "Backup:       $backupPath"
         Write-Host "Output API:   $outputApi"
-        Write-Host 'Reported VRAM: 2048 MB'
+        Write-Host "Reported VRAM: $(if ($reportedVRAM) { "$reportedVRAM (preserved)" } else { 'package default' })"
     } catch {
         if (Test-Path -LiteralPath (Join-Path $backupPath 'manifest.json')) {
             try {
                 $rollbackManifest = Get-Manifest $backupPath
                 Restore-OriginalFiles -TargetPath $TargetPath -BackupPath $backupPath -Manifest $rollbackManifest
+                $originalNames = @($rollbackManifest.OriginalFiles | ForEach-Object { [string]$_.Name })
                 foreach ($name in @('dgVoodoo.conf', 'dgVoodooCpl.exe')) {
                     $generated = Join-Path $TargetPath $name
-                    if (Test-Path -LiteralPath $generated) {
+                    if ($name -notin $originalNames -and (Test-Path -LiteralPath $generated)) {
                         Remove-Item -LiteralPath $generated -Force
                     }
                 }
@@ -222,6 +264,8 @@ function Install-Wrapper {
             } catch {
                 Write-Warning "Automatic rollback also failed: $($_.Exception.Message)"
             }
+        } elseif ($createdBackup -and (Test-Path -LiteralPath $backupPath)) {
+            Remove-Item -LiteralPath $backupPath -Recurse -Force
         }
         throw
     } finally {
@@ -235,6 +279,13 @@ function Uninstall-Wrapper {
     param([string]$TargetPath)
 
     Assert-AscensionClosed
+    $backupPath = Join-Path $TargetPath '.dx11-wrapper-backup'
+    $manifest = Get-Manifest $backupPath
+    [void](Assert-WrapperBackup -BackupPath $backupPath -Manifest $manifest)
+    $currentExecutableHash = Get-FileSha256 (Join-Path $TargetPath 'Ascension.exe')
+    if ([string]$manifest.AscensionExecutableSha256 -ne $currentExecutableHash) {
+        throw 'Ascension.exe changed after this wrapper backup was created. Refusing to restore files from an older client generation; run launcher repair until dgVoodoo is replaced, then reinstall to capture a new baseline.'
+    }
     $reShadeBackup = Join-Path $TargetPath '.reshade-backup'
     $reShadeScript = Join-Path $PSScriptRoot 'AscensionReShade.ps1'
     if (Test-Path -LiteralPath $reShadeBackup) {
@@ -246,23 +297,9 @@ function Uninstall-Wrapper {
         & powershell.exe @reShadeArguments
         if ($LASTEXITCODE -ne 0) { throw 'ReShade removal failed; wrapper uninstall was cancelled.' }
     }
-    $backupPath = Join-Path $TargetPath '.dx11-wrapper-backup'
-    $manifest = Get-Manifest $backupPath
     $profileBackupPath = Join-Path $TargetPath '.graphics-profile-backup'
-    $profileWtfBackup = Join-Path $profileBackupPath 'Config.wtf'
-    $wtfConfigPath = Join-Path $TargetPath 'WTF\Config.wtf'
 
     Restore-OriginalFiles -TargetPath $TargetPath -BackupPath $backupPath -Manifest $manifest
-    if (Test-Path -LiteralPath $profileWtfBackup -PathType Leaf) {
-        Copy-Item -LiteralPath $profileWtfBackup -Destination $wtfConfigPath -Force
-    }
-    foreach ($name in @('dgVoodoo.conf', 'dgVoodooCpl.exe')) {
-        $target = Join-Path $TargetPath $name
-        if (Test-Path -LiteralPath $target) {
-            Remove-Item -LiteralPath $target -Force
-        }
-    }
-
     foreach ($entry in @($manifest.OriginalFiles)) {
         $restored = Join-Path $TargetPath ([string]$entry.Name)
         if ((Get-FileSha256 $restored) -ne ([string]$entry.Sha256).ToUpperInvariant()) {

@@ -1,6 +1,21 @@
 AURA VISUAL UPGRADE CHANGELOG
 =============================
 
+0.4.0 - 2026-07-18
+------------------
+- Added hardware-neutral Adaptive Optimization with selectable targets and behavior goals.
+- Added a 15-second context-aware benchmark and profile recommendation.
+- Added verified gradual reductions, benefit checks, cooldowns, conservative recovery, and retained baseline restoration.
+- Added world-transition warm-up, frame/VSync ceiling awareness, background-throttle filtering, and context safety floors.
+- Kept encounter particles, projected textures, view distance, frame caps, texture quality, restart-required controls, and external graphics outside automatic control.
+- Removed fixed hardware, frame-cap, renderer, and ReShade assumptions from game profiles.
+- Added a draggable minimap icon with a persisted position.
+- Rebuilt the dashboard with native WotLK graphics and controls.
+- Added modular Lua themes, ordered skin providers, and optional LibSharedMedia support.
+- Made companion external sync opt-in and preserved existing frame-cap and VRAM values in ordinary external profiles.
+- Fixed MSAA changes being reported as failed while Ascension was waiting for a graphics restart to update the live CVar.
+- Replaced the ReShade approval confirmation with an explicit unrestricted-depth option and a policy/anti-cheat risk explanation.
+
 0.3.0 - 2026-07-18
 ------------------
 - Added peer-reported version awareness over the native addon-message channel.

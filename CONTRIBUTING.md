@@ -5,3 +5,4 @@
 3. Do not add filesystem, registry, process, or driver claims that addon Lua cannot verify.
 4. Validate changes with the workflows before creating a pull request.
 5. Update the TOC version and changelog for releases.
+6. Use `AURA:RegisterTheme` or `AURA:RegisterSkinProvider` for UI integrations; WoW 3.3.5 cannot load CSS.

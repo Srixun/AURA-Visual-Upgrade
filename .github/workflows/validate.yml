@@ -9,10 +9,12 @@ jobs:
   validate:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Validate PowerShell syntax
-        shell: pwsh
+        shell: powershell
         run: |
           $failed = $false
           Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
@@ -26,14 +28,10 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-
       - name: Validate Lua 5.1 syntax
-        shell: pwsh
+        shell: powershell
         run: |
-          npm install --no-save --no-audit --no-fund luaparse@0.3.1
+          npm install --ignore-scripts --no-save --no-audit --no-fund luaparse@0.3.1
           node -e "const fs=require('fs'),p=require('luaparse'),cp=require('child_process');const files=cp.execFileSync('git',['ls-files','*.lua'],{encoding:'utf8'}).trim().split(/\r?\n/).filter(Boolean);for(const f of files){p.parse(fs.readFileSync(f,'utf8'),{luaVersion:'5.1'});console.log('VALID '+f)}"
 
       - name: Validate addon metadata
@@ -47,3 +45,28 @@ jobs:
           $tocVersion = [regex]::Match($toc, '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$').Groups[1].Value
           $dataVersion = [regex]::Match($data, 'AURA\.VERSION\s*=\s*"(\d+\.\d+\.\d+)"').Groups[1].Value
           if ($tocVersion -ne $dataVersion) { throw "TOC version $tocVersion does not match Data.lua version $dataVersion." }
+          foreach ($line in ($toc -split '\r?\n')) {
+            $entry = $line.Trim()
+            if (-not $entry -or $entry.StartsWith('#') -or $entry -notmatch '\.(lua|xml)$') { continue }
+            if ($entry -match '(^[\\/]|\.\.)') { throw "Unsafe TOC entry: $entry" }
+            if (-not (Test-Path -LiteralPath (Join-Path 'addon/AURA_VisualUpgrade' $entry) -PathType Leaf)) { throw "Missing TOC entry: $entry" }
+          }
+
+      - name: Validate addon package inventory
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archivePath = Join-Path $env:RUNNER_TEMP 'AURA-Visual-Upgrade-Addon.zip'
+          Compress-Archive -Path 'addon/AURA_VisualUpgrade' -DestinationPath $archivePath -CompressionLevel Optimal
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+          try {
+            $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
+            foreach ($required in @('AURA_VisualUpgrade/AURA_VisualUpgrade.toc','AURA_VisualUpgrade/Core.lua','AURA_VisualUpgrade/Data.lua','AURA_VisualUpgrade/Theme.lua','AURA_VisualUpgrade/UI.lua','AURA_VisualUpgrade/Textures/AURA_FullLogo.png','AURA_VisualUpgrade/Textures/AURA_FullLogo.tga')) {
+              if ($names -notcontains $required) { throw "Addon package is missing $required" }
+            }
+            $tocEntry = $archive.Entries | Where-Object { $_.FullName.Replace('\','/') -eq 'AURA_VisualUpgrade/AURA_VisualUpgrade.toc' }
+            $reader = New-Object System.IO.StreamReader($tocEntry.Open())
+            try { $packagedToc = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            $sourceToc = Get-Content 'addon/AURA_VisualUpgrade/AURA_VisualUpgrade.toc' -Raw
+            if ($packagedToc -ne $sourceToc) { throw 'Packaged TOC differs from source.' }
+          } finally { $archive.Dispose() }
